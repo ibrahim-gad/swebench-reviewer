@@ -1216,7 +1216,7 @@ export default function ReportCheckerPage() {
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => handleSearchResultNavigation("base", "prev")}
-                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          className="px-1 py-0 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                         >
                           ←
                         </button>
@@ -1225,7 +1225,7 @@ export default function ReportCheckerPage() {
                         </span>
                         <button
                           onClick={() => handleSearchResultNavigation("base", "next")}
-                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          className="px-1 py-0 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                         >
                           →
                         </button>
@@ -1287,7 +1287,7 @@ export default function ReportCheckerPage() {
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => handleSearchResultNavigation("before", "prev")}
-                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          className="px-1 py-0 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                         >
                           ←
                         </button>
@@ -1296,7 +1296,7 @@ export default function ReportCheckerPage() {
                         </span>
                         <button
                           onClick={() => handleSearchResultNavigation("before", "next")}
-                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          className="px-1 py-0 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                         >
                           →
                         </button>
@@ -1358,7 +1358,7 @@ export default function ReportCheckerPage() {
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => handleSearchResultNavigation("after", "prev")}
-                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          className="px-1 py-0 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                         >
                           ←
                         </button>
@@ -1367,7 +1367,7 @@ export default function ReportCheckerPage() {
                         </span>
                         <button
                           onClick={() => handleSearchResultNavigation("after", "next")}
-                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          className="px-1 py-0 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                         >
                           →
                         </button>

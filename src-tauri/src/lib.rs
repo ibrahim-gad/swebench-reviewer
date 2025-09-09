@@ -17,8 +17,8 @@ fn get_auth_state() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn get_google_client_id() -> Result<String, String> {
-    auth::get_google_client_id()
+fn get_google_client_secret() -> Result<String, String> {
+    auth::get_google_client_secret()
 }
 
 #[tauri::command]
@@ -106,7 +106,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_auth_state,
-            get_google_client_id,
+            get_google_client_secret,
             save_google_tokens,
             download_drive_file,
             upload_drive_file,

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use dirs;
+use crate::settings;
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct GoogleTokens {
@@ -39,20 +40,23 @@ pub fn get_google_client_id() -> Result<String, String> {
     std::env::var("GOOGLE_CLIENT_ID").map_err(|e| e.to_string())
 }
 
+pub fn get_google_client_secret() -> Result<String, String> {
+    settings::load_setting("google_client_secret".to_string())
+}
+
 pub fn save_google_tokens(tokens: GoogleTokens) -> Result<(), String> {
     let path = tokens_path();
     let data = serde_json::to_string(&tokens).map_err(|e| e.to_string())?;
     fs::write(path, data).map_err(|e| e.to_string())
 }
 
-// Google OAuth client secret for refresh (should be kept private)
-const GOOGLE_CLIENT_SECRET: &str = "";
-
 pub async fn refresh_access_token(tokens: &GoogleTokens) -> Result<GoogleTokens, String> {
+    let client_secret = get_google_client_secret()?;
+    
     let client = reqwest::Client::new();
     let params = [
         ("client_id", "917256818414-pcsi1favsuki4crrmd5st51ebp6ghl3g.apps.googleusercontent.com"),
-        ("client_secret", GOOGLE_CLIENT_SECRET),
+        ("client_secret", client_secret.as_str()),
         ("refresh_token", &tokens.refresh_token),
         ("grant_type", "refresh_token"),
     ];

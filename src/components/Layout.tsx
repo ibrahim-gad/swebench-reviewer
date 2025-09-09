@@ -87,10 +87,15 @@ export default function Layout({ children }: LayoutProps) {
     setAuthError(null);
     try {
       const redirectUri = "urn:ietf:wg:oauth:2.0:oob";
+      const clientSecret = await invoke<string>("get_google_client_secret");
       const params = new URLSearchParams({
         code: authCode,
         client_id: googleClientId,
+<<<<<<< HEAD
         client_secret: "",
+=======
+        client_secret: clientSecret,
+>>>>>>> cefbb4b (A few UI improvements)
         redirect_uri: redirectUri,
         grant_type: "authorization_code",
       });

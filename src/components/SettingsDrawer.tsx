@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface SettingsDrawerProps {
@@ -8,6 +8,7 @@ interface SettingsDrawerProps {
 }
 
 export default function SettingsDrawer({ isOpen, onClose, onLogout }: SettingsDrawerProps) {
+  const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -22,8 +23,10 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout }: SettingsDr
 
   const loadSettings = async () => {
     try {
+      const clientSecret = await invoke<string>("load_setting", { key: "google_client_secret" });
       const geminiKey = await invoke<string>("load_setting", { key: "gemini_api_key" });
       const openaiKey = await invoke<string>("load_setting", { key: "openai_api_key" });
+      setGoogleClientSecret(clientSecret || "");
       setGeminiApiKey(geminiKey || "");
       setOpenaiApiKey(openaiKey || "");
     } catch (error) {
@@ -36,6 +39,10 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout }: SettingsDr
     setSaveSuccess(false);
     
     try {
+      await invoke("save_setting", { 
+        key: "google_client_secret", 
+        value: googleClientSecret 
+      });
       await invoke("save_setting", { 
         key: "gemini_api_key", 
         value: geminiApiKey 
@@ -104,6 +111,23 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout }: SettingsDr
         {/* Content */}
         <div className="flex flex-col flex-1 min-h-0">
           <div className="flex-1 p-6 space-y-6 overflow-y-auto">
+            {/* Google OAuth Client Secret */}
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Google OAuth Client Secret
+              </label>
+              <input
+                type="password"
+                value={googleClientSecret}
+                onChange={(e) => setGoogleClientSecret(e.target.value)}
+                placeholder="Enter your Google OAuth Client Secret"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Required for Google Drive authentication. Keep this secret secure.
+              </p>
+            </div>
+
             {/* Google Gemini API Key */}
             <div className="space-y-3">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
