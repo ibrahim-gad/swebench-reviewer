@@ -1,0 +1,35 @@
+{
+  "name": "swe-reviewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "rsbuild dev",
+    "build": "rsbuild build",
+    "preview": "rsbuild preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@tauri-apps/api": "^2.7.0",
+    "@tauri-apps/plugin-opener": "^2",
+    "autoprefixer": "^10.4.21",
+    "install": "^0.13.0",
+    "jwt-decode": "^4.0.0",
+    "postcss": "^8.5.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-icons": "^5.5.0",
+    "react-router-dom": "^7.8.2",
+    "tailwindcss": "^3.4.17"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^1.1.11",
+    "@rsbuild/plugin-react": "^1.1.1",
+    "@rsbuild/plugin-sass": "^1.3.2",
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "~5.6.2"
+  }
+}
