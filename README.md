@@ -2,6 +2,8 @@
 
 A Tauri-based desktop application for software engineering review tasks, built with React, TypeScript, and Rust.
 
+![SWE Reviewer Screenshot](public/screenshot.png)
+
 ## Prerequisites
 
 Before building this project, ensure your system meets the following requirements:
