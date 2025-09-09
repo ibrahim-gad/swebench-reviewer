@@ -238,7 +238,7 @@ async fn get_folder_metadata(folder_id: &str, access_token: &str) -> Result<serd
 }
 
 // Google OAuth client secret for refresh (should be kept private)
-const GOOGLE_CLIENT_SECRET: &str = "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";
+const GOOGLE_CLIENT_SECRET: &str = "";
 
 async fn refresh_access_token(tokens: &GoogleTokens) -> Result<GoogleTokens, String> {
     let client = reqwest::Client::new();
