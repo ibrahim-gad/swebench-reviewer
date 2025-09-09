@@ -91,11 +91,7 @@ export default function Layout({ children }: LayoutProps) {
       const params = new URLSearchParams({
         code: authCode,
         client_id: googleClientId,
-<<<<<<< HEAD
-        client_secret: "",
-=======
         client_secret: clientSecret,
->>>>>>> cefbb4b (A few UI improvements)
         redirect_uri: redirectUri,
         grant_type: "authorization_code",
       });
