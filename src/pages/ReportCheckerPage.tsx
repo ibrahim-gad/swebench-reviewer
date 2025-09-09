@@ -63,8 +63,8 @@ interface AnalysisTableData {
   after_status: "passed" | "failed" | "non_existing";
 }
 
-type TabKey = "base" | "before" | "after" | "agent" | "main_json" | "report" | "analysis" | "base_analysis" | "before_analysis" | "after_analysis" | "agent_analysis";
-type MainTabKey = "input" | "result";
+type TabKey = "base" | "before" | "after" | "agent" | "main_json" | "analysis" | "base_analysis" | "before_analysis" | "after_analysis" | "agent_analysis";
+type MainTabKey = "input" | /* "result" | */ "manual_checker"; // COMMENTED OUT AGENTIC FUNCTIONALITY
 
 export default function ReportCheckerPage() {
   const [deliverableLink, setDeliverableLink] = useState("");
@@ -80,7 +80,8 @@ export default function ReportCheckerPage() {
   const [activeMainTab, setActiveMainTab] = useState<MainTabKey>("input");
   const [lastActiveTabs, setLastActiveTabs] = useState<{[key in MainTabKey]: TabKey}>({
     input: "base",
-    result: "analysis"
+    // result: "analysis", // COMMENTED OUT AGENTIC FUNCTIONALITY
+    manual_checker: "base"
   });
 
   const setActiveTabWithMemory = (tabKey: TabKey) => {
@@ -97,9 +98,28 @@ export default function ReportCheckerPage() {
   };
   const [fileContents, setFileContents] = useState<FileContents>({});
   const [loadingFiles, setLoadingFiles] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  // COMMENTED OUT - AGENTIC FUNCTIONALITY
+  // const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [editableContents, setEditableContents] = useState<{[key in TabKey]?: string}>({});
-  const [analysisTableData, setAnalysisTableData] = useState<AnalysisTableData[]>([]);
+  // COMMENTED OUT - AGENTIC FUNCTIONALITY
+  // const [analysisTableData, setAnalysisTableData] = useState<AnalysisTableData[]>([]);
+
+  // Manual checker state
+  const [failToPassTests, setFailToPassTests] = useState<string[]>([]);
+  const [passToPassTests, setPassToPassTests] = useState<string[]>([]);
+  const [selectedFailToPassIndex, setSelectedFailToPassIndex] = useState(0);
+  const [selectedPassToPassIndex, setSelectedPassToPassIndex] = useState(0);
+  const [currentSelection, setCurrentSelection] = useState<"fail_to_pass" | "pass_to_pass">("fail_to_pass");
+  const [searchResults, setSearchResults] = useState<{
+    base: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
+    before: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
+    after: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>
+  }>({ base: [], before: [], after: [] });
+  const [searchResultIndices, setSearchResultIndices] = useState({
+    base: 0,
+    before: 0,
+    after: 0
+  });
 
   const resetState = () => {
     setDeliverableLink("");
@@ -115,13 +135,22 @@ export default function ReportCheckerPage() {
     setActiveMainTab("input");
     setLastActiveTabs({
       input: "base",
-      result: "analysis"
+      // result: "analysis", // COMMENTED OUT AGENTIC FUNCTIONALITY
+      manual_checker: "base"
     });
     setFileContents({});
     setLoadingFiles(false);
-    setIsAnalyzing(false);
+    // setIsAnalyzing(false); // COMMENTED OUT - AGENTIC FUNCTIONALITY
     setEditableContents({});
-    setAnalysisTableData([]);
+    // setAnalysisTableData([]); // COMMENTED OUT - AGENTIC FUNCTIONALITY
+    // Reset manual checker state
+    setFailToPassTests([]);
+    setPassToPassTests([]);
+    setSelectedFailToPassIndex(0);
+    setSelectedPassToPassIndex(0);
+    setCurrentSelection("fail_to_pass");
+    setSearchResults({ base: [], before: [], after: [] });
+    setSearchResultIndices({ base: 0, before: 0, after: 0 });
   };
 
   const updateStageStatus = (stage: ProcessingStage, status: StageStatus) => {
@@ -141,7 +170,7 @@ export default function ReportCheckerPage() {
       const contents: FileContents = {};
       
       // Load each file type
-      const fileTypes = ["base", "before", "after", "agent", "main_json", "report"];
+      const fileTypes = ["base", "before", "after", "agent", "main_json"];
       
       for (const fileType of fileTypes) {
         try {
@@ -150,8 +179,8 @@ export default function ReportCheckerPage() {
             filePaths: result.file_paths 
           }) as string;
           
-          // Determine file type - report should also be treated as JSON
-          const isJsonType = fileType.includes("json") || fileType === "report";
+          // Determine file type - only JSON files are treated as JSON
+          const isJsonType = fileType.includes("json");
           contents[fileType as TabKey] = {
             content,
             file_type: isJsonType ? "json" : "text"
@@ -219,7 +248,7 @@ export default function ReportCheckerPage() {
       
       // Initialize editable contents for JSON tabs
       const editableInit: {[key in TabKey]?: string} = {};
-      for (const key of ["main_json", "report"] as TabKey[]) {
+      for (const key of ["main_json"] as TabKey[]) {
         if (contents[key] && contents[key].file_type === "json") {
           editableInit[key] = contents[key].content;
         }
@@ -243,6 +272,7 @@ export default function ReportCheckerPage() {
   useEffect(() => {
     if (result) {
       loadFileContents();
+      loadTestLists();
     }
   }, [result]);
 
@@ -300,7 +330,7 @@ export default function ReportCheckerPage() {
         });
       }
 
-      setAnalysisTableData(tableData);
+      // setAnalysisTableData(tableData); // COMMENTED OUT - AGENTIC FUNCTIONALITY
     } catch (error) {
       console.error("Failed to parse analysis data:", error);
     }
@@ -325,11 +355,198 @@ export default function ReportCheckerPage() {
     return "non_existing";
   };
 
+  const loadTestLists = async () => {
+    if (!result?.file_paths || result.file_paths.length === 0) return;
+    
+    try {
+      const testLists = await invoke("get_test_lists", { filePaths: result.file_paths }) as {
+        fail_to_pass: string[],
+        pass_to_pass: string[]
+      };
+      
+      setFailToPassTests(testLists.fail_to_pass);
+      setPassToPassTests(testLists.pass_to_pass);
+      
+      // Reset selection indices
+      setSelectedFailToPassIndex(0);
+      setSelectedPassToPassIndex(0);
+      
+      // Load search results for the first test
+      if (testLists.fail_to_pass.length > 0) {
+        await searchForTest(testLists.fail_to_pass[0]);
+      } else if (testLists.pass_to_pass.length > 0) {
+        setCurrentSelection("pass_to_pass");
+        await searchForTest(testLists.pass_to_pass[0]);
+      }
+    } catch (error) {
+      console.error("Failed to load test lists:", error);
+    }
+  };
+
+  const searchForTest = async (testName: string) => {
+    if (!result?.file_paths || result.file_paths.length === 0) return;
+    
+    try {
+      const results = await invoke("search_logs", { 
+        filePaths: result.file_paths, 
+        testName: testName 
+      }) as {
+        base_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
+        before_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
+        after_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>
+      };
+      
+      setSearchResults({
+        base: results.base_results,
+        before: results.before_results,
+        after: results.after_results
+      });
+      
+      // Reset search result indices
+      setSearchResultIndices({ base: 0, before: 0, after: 0 });
+    } catch (error) {
+      console.error("Failed to search logs:", error);
+      setSearchResults({ base: [], before: [], after: [] });
+    }
+  };
+
   // Force re-render when fileContents changes to update tabs
   useEffect(() => {
     // This will trigger a re-render when fileContents changes
   }, [fileContents]);
 
+  // Keyboard navigation for manual checker
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (activeMainTab !== "manual_checker") return;
+      
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (currentSelection === "fail_to_pass") {
+          const newIndex = Math.max(0, selectedFailToPassIndex - 1);
+          setSelectedFailToPassIndex(newIndex);
+          if (failToPassTests[newIndex]) {
+            searchForTest(failToPassTests[newIndex]);
+          }
+        } else {
+          const newIndex = Math.max(0, selectedPassToPassIndex - 1);
+          setSelectedPassToPassIndex(newIndex);
+          if (passToPassTests[newIndex]) {
+            searchForTest(passToPassTests[newIndex]);
+          }
+        }
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (currentSelection === "fail_to_pass") {
+          const newIndex = Math.min(failToPassTests.length - 1, selectedFailToPassIndex + 1);
+          setSelectedFailToPassIndex(newIndex);
+          if (failToPassTests[newIndex]) {
+            searchForTest(failToPassTests[newIndex]);
+          }
+        } else {
+          const newIndex = Math.min(passToPassTests.length - 1, selectedPassToPassIndex + 1);
+          setSelectedPassToPassIndex(newIndex);
+          if (passToPassTests[newIndex]) {
+            searchForTest(passToPassTests[newIndex]);
+          }
+        }
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        // Navigate between fail_to_pass and pass_to_pass
+        if (currentSelection === "pass_to_pass" && failToPassTests.length > 0) {
+          setCurrentSelection("fail_to_pass");
+          if (failToPassTests[selectedFailToPassIndex]) {
+            searchForTest(failToPassTests[selectedFailToPassIndex]);
+          }
+        }
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        // Navigate between fail_to_pass and pass_to_pass
+        if (currentSelection === "fail_to_pass" && passToPassTests.length > 0) {
+          setCurrentSelection("pass_to_pass");
+          if (passToPassTests[selectedPassToPassIndex]) {
+            searchForTest(passToPassTests[selectedPassToPassIndex]);
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeMainTab, currentSelection, selectedFailToPassIndex, selectedPassToPassIndex, failToPassTests, passToPassTests]);
+
+  // Auto-scroll to selected item when selection changes
+  useEffect(() => {
+    if (activeMainTab !== "manual_checker") return;
+    
+    const scrollToSelectedItem = () => {
+      const selectedIndex = currentSelection === "fail_to_pass" ? selectedFailToPassIndex : selectedPassToPassIndex;
+      const elementId = `${currentSelection}-item-${selectedIndex}`;
+      const element = document.getElementById(elementId);
+      
+      if (element) {
+        element.scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+          inline: "nearest"
+        });
+      }
+    };
+    
+    // Small delay to ensure DOM is updated
+    const timeoutId = setTimeout(scrollToSelectedItem, 50);
+    return () => clearTimeout(timeoutId);
+  }, [activeMainTab, currentSelection, selectedFailToPassIndex, selectedPassToPassIndex]);
+
+  const handleSearchResultNavigation = (logType: "base" | "before" | "after", direction: "next" | "prev") => {
+    const currentResults = searchResults[logType];
+    if (currentResults.length === 0) return;
+    
+    const currentIndex = searchResultIndices[logType];
+    let newIndex;
+    
+    if (direction === "next") {
+      newIndex = (currentIndex + 1) % currentResults.length;
+    } else {
+      newIndex = currentIndex === 0 ? currentResults.length - 1 : currentIndex - 1;
+    }
+    
+    setSearchResultIndices(prev => ({
+      ...prev,
+      [logType]: newIndex
+    }));
+  };
+
+  const copyTestName = async () => {
+    const testName = currentSelection === "fail_to_pass" 
+      ? failToPassTests[selectedFailToPassIndex]
+      : passToPassTests[selectedPassToPassIndex];
+    
+    if (testName) {
+      try {
+        await navigator.clipboard.writeText(testName);
+        // Could add a toast notification here if desired
+        console.log("Test name copied to clipboard:", testName);
+      } catch (err) {
+        console.error("Failed to copy test name:", err);
+        // Fallback for older browsers
+        const textArea = document.createElement("textarea");
+        textArea.value = testName;
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+          console.log("Test name copied to clipboard (fallback):", testName);
+        } catch (fallbackErr) {
+          console.error("Fallback copy failed:", fallbackErr);
+        }
+        document.body.removeChild(textArea);
+      }
+    }
+  };
+
+  /* COMMENTED OUT - AGENTIC FUNCTIONALITY
   const handleAnalyze = async () => {
     if (!result?.file_paths) return;
     
@@ -361,8 +578,9 @@ export default function ReportCheckerPage() {
       
       console.log("Result state updated, switching to result tab...");
       
+      // COMMENTED OUT - AGENTIC FUNCTIONALITY
       // Always switch to result tab to show the analysis
-      setActiveMainTab("result");
+      // setActiveMainTab("result");
       
       // Load analysis files directly instead of calling loadFileContents
       console.log("Loading analysis files directly...");
@@ -417,17 +635,21 @@ export default function ReportCheckerPage() {
       console.error("Error stack:", error.stack);
       setError(`Analysis failed: ${error}`);
       
+      // COMMENTED OUT - AGENTIC FUNCTIONALITY
       // Even on error, switch to result tab to show the error
-      setActiveMainTab("result");
+      // setActiveMainTab("result");
     } finally {
-      setIsAnalyzing(false);
+      // setIsAnalyzing(false); // COMMENTED OUT - AGENTIC FUNCTIONALITY
     }
   };
+  END COMMENTED OUT - AGENTIC FUNCTIONALITY */
 
+  /* COMMENTED OUT - AGENTIC FUNCTIONALITY
   const handleCancelAnalyze = () => {
     setIsAnalyzing(false);
     // In a real implementation, you'd cancel the backend operation here
   };
+  END COMMENTED OUT - AGENTIC FUNCTIONALITY */
 
   const renderJsonEditor = (tabKey: TabKey, content: string) => {
     const handleEditorChange = (value: string | undefined) => {
@@ -467,8 +689,8 @@ export default function ReportCheckerPage() {
   };
 
   const renderJsonContent = (content: string, tabKey?: TabKey) => {
-    // Use Monaco Editor for main_json and report tabs
-    if (tabKey && (tabKey === "main_json" || tabKey === "report")) {
+    // Use Monaco Editor for main_json tab
+    if (tabKey && tabKey === "main_json") {
       return renderJsonEditor(tabKey, content);
     }
 
@@ -489,6 +711,7 @@ export default function ReportCheckerPage() {
     }
   };
 
+  /* COMMENTED OUT - AGENTIC FUNCTIONALITY
   const renderAnalysisTable = () => {
     if (analysisTableData.length === 0) {
       return (
@@ -610,6 +833,7 @@ export default function ReportCheckerPage() {
       </div>
     );
   };
+  END COMMENTED OUT - AGENTIC FUNCTIONALITY */
 
   const renderTextContent = (content: string) => {
     return (
@@ -625,7 +849,6 @@ export default function ReportCheckerPage() {
     { key: "after" as TabKey, label: "After" },
     { key: "agent" as TabKey, label: "Agent" },
     { key: "main_json" as TabKey, label: "Main Json" },
-    { key: "report" as TabKey, label: "Report" },
   ];
 
   const inputTabs = getInputTabs();
@@ -726,9 +949,9 @@ export default function ReportCheckerPage() {
   if (result) {
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        <div className="flex-none bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 shadow-sm mb-3">
-          {/* Single line with back button, tabs, and analyze button */}
-          <div className="flex items-center justify-between">
+        <div className="flex-none bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-1 shadow-sm mb-1">
+          {/* Single line with back button, centered tabs, and copy functionality */}
+          <div className="flex items-center justify-between relative">
             {/* Back button */}
             <button
               onClick={resetState}
@@ -740,31 +963,69 @@ export default function ReportCheckerPage() {
               Check another
             </button>
 
-            {/* Main Tab Navigation */}
-            <div className="flex space-x-1 bg-gray-100 dark:bg-gray-700 p-1 rounded">
-              <button
-                onClick={() => setActiveMainTabWithMemory("input")}
-                className={`px-3 py-1.5 rounded font-medium text-xs transition-all duration-200 ${
-                  activeMainTab === "input"
-                    ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
-                    : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
-                }`}
-              >
-                Input
-              </button>
-              <button
-                onClick={() => setActiveMainTabWithMemory("result")}
-                className={`px-3 py-1.5 rounded font-medium text-xs transition-all duration-200 ${
-                  activeMainTab === "result"
-                    ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
-                    : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
-                }`}
-              >
-                Result
-              </button>
+            {/* Main Tab Navigation - Centered and Larger */}
+            <div className="flex justify-center absolute left-1/2 transform -translate-x-1/2">
+              <div className="flex space-x-1 bg-gray-100 dark:bg-gray-700 p-1 rounded">
+                <button
+                  onClick={() => setActiveMainTabWithMemory("input")}
+                  className={`px-6 py-2.5 rounded font-medium text-sm transition-all duration-200 ${
+                    activeMainTab === "input"
+                      ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
+                      : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
+                  }`}
+                >
+                  Input
+                </button>
+                {/* COMMENTED OUT - AGENTIC FUNCTIONALITY */}
+                {/*
+                <button
+                  onClick={() => setActiveMainTabWithMemory("result")}
+                  className={`px-6 py-2.5 rounded font-medium text-sm transition-all duration-200 ${
+                    activeMainTab === "result"
+                      ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
+                      : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
+                  }`}
+                >
+                  Result
+                </button>
+                */}
+                <button
+                  onClick={() => setActiveMainTabWithMemory("manual_checker")}
+                  className={`px-6 py-2.5 rounded font-medium text-sm transition-all duration-200 ${
+                    activeMainTab === "manual_checker"
+                      ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
+                      : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
+                  }`}
+                >
+                  Tests Checker
+                </button>
+              </div>
             </div>
 
+            {/* Copy Selected Test Name - Only show in Tests Checker tab */}
+            {activeMainTab === "manual_checker" && (failToPassTests.length > 0 || passToPassTests.length > 0) && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600 dark:text-gray-400 font-mono max-w-xs truncate">
+                  {currentSelection === "fail_to_pass" 
+                    ? failToPassTests[selectedFailToPassIndex]
+                    : passToPassTests[selectedPassToPassIndex]
+                  }
+                </span>
+                <button
+                  onClick={copyTestName}
+                  className="p-1.5 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                  title="Copy test name"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {/* COMMENTED OUT - AGENTIC FUNCTIONALITY */}
             {/* Analyze/Cancel button */}
+            {/*
             {isAnalyzing ? (
               <button
                 onClick={handleCancelAnalyze}
@@ -787,6 +1048,7 @@ export default function ReportCheckerPage() {
                 Analyze
               </button>
             )}
+            */}
           </div>
         </div>
 
@@ -831,7 +1093,7 @@ export default function ReportCheckerPage() {
                           {activeTab.replace("_", " ")} Content
                         </h3>
                         <div className={`flex-1 min-h-0 ${
-                          fileContents[activeTab]!.file_type === "json" && (activeTab === "main_json" || activeTab === "report")
+                          fileContents[activeTab]!.file_type === "json" && activeTab === "main_json"
                             ? "overflow-hidden" 
                             : "overflow-auto"
                         }`}>
@@ -857,14 +1119,305 @@ export default function ReportCheckerPage() {
                 )}
               </div>
             </div>
-          ) : (
+          ) : 
+          /* COMMENTED OUT - AGENTIC FUNCTIONALITY
+          activeMainTab === "result" ? (
             <div className="flex flex-col h-full p-6">
-              {/* Result Content - Only Analysis Table */}
+              {/* Result Content - Only Analysis Table *\/}
               <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4 flex-shrink-0">
                 Analysis Results
               </h3>
               <div className="flex-1 min-h-0 overflow-auto">
                 {renderAnalysisTable()}
+              </div>
+            </div>
+          ) : 
+          END COMMENTED OUT */ (
+            // Manual Checker Content
+            <div className="flex flex-col h-full">
+              {/* Test Lists Section (Top) */}
+              <div className="h-1/2 border-b border-gray-200 dark:border-gray-700">
+                <div className="h-full flex">
+                  {/* Fail to Pass Tests */}
+                  <div className="w-1/2 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+                    <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600">
+                      <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                        Fail to Pass Tests ({failToPassTests.length})
+                      </h4>
+                    </div>
+                    <div className="flex-1 overflow-auto">
+                      {failToPassTests.map((test, index) => (
+                        <div
+                          key={index}
+                          id={`fail_to_pass-item-${index}`}
+                          className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex ${
+                            currentSelection === "fail_to_pass" && selectedFailToPassIndex === index
+                              ? "bg-blue-100 dark:bg-blue-900/50 text-blue-900 dark:text-blue-100"
+                              : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                          }`}
+                          onClick={() => {
+                            setCurrentSelection("fail_to_pass");
+                            setSelectedFailToPassIndex(index);
+                            searchForTest(test);
+                          }}
+                        >
+                          <span className="w-8 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0 font-mono text-xs">
+                            {index + 1}
+                          </span>
+                          <span className="flex-1">{test}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {/* Pass to Pass Tests */}
+                  <div className="w-1/2 flex flex-col">
+                    <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600">
+                      <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                        Pass to Pass Tests ({passToPassTests.length})
+                      </h4>
+                    </div>
+                    <div className="flex-1 overflow-auto">
+                      {passToPassTests.map((test, index) => (
+                        <div
+                          key={index}
+                          id={`pass_to_pass-item-${index}`}
+                          className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex ${
+                            currentSelection === "pass_to_pass" && selectedPassToPassIndex === index
+                              ? "bg-green-100 dark:bg-green-900/50 text-green-900 dark:text-green-100"
+                              : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                          }`}
+                          onClick={() => {
+                            setCurrentSelection("pass_to_pass");
+                            setSelectedPassToPassIndex(index);
+                            searchForTest(test);
+                          }}
+                        >
+                          <span className="w-8 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0 font-mono text-xs">
+                            {index + 1}
+                          </span>
+                          <span className="flex-1">{test}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Log Search Results Section (Bottom) */}
+              <div className="h-1/2 flex">
+                {/* Base Log Results */}
+                <div className="w-1/3 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+                  <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600 flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                      Base Log ({searchResults.base.length} results)
+                    </h4>
+                    {searchResults.base.length > 1 && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleSearchResultNavigation("base", "prev")}
+                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          ←
+                        </button>
+                        <span className="text-xs text-gray-500">
+                          {searchResultIndices.base + 1}/{searchResults.base.length}
+                        </span>
+                        <button
+                          onClick={() => handleSearchResultNavigation("base", "next")}
+                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 overflow-auto p-4">
+                    {searchResults.base.length > 0 ? (
+                      <div className="font-mono text-xs">
+                        {(() => {
+                          const result = searchResults.base[searchResultIndices.base];
+                          const startLineNumber = result.line_number - result.context_before.length;
+                          let currentLineNumber = startLineNumber;
+                          
+                          return (
+                            <>
+                              {/* Context before */}
+                              {result.context_before.map((line, i) => (
+                                <div key={`before-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                              {/* Highlighted match */}
+                              <div className="flex bg-yellow-200 dark:bg-yellow-800 text-gray-900 dark:text-gray-100 font-bold">
+                                <span className="w-12 text-right pr-2 text-gray-700 dark:text-gray-300 flex-shrink-0">
+                                  {currentLineNumber++}
+                                </span>
+                                <span className="flex-1">{result.line_content}</span>
+                              </div>
+                              {/* Context after */}
+                              {result.context_after.map((line, i) => (
+                                <div key={`after-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="text-gray-500 dark:text-gray-400 text-sm">No matches found</div>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Before Log Results */}
+                <div className="w-1/3 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+                  <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600 flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                      Before Log ({searchResults.before.length} results)
+                    </h4>
+                    {searchResults.before.length > 1 && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleSearchResultNavigation("before", "prev")}
+                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          ←
+                        </button>
+                        <span className="text-xs text-gray-500">
+                          {searchResultIndices.before + 1}/{searchResults.before.length}
+                        </span>
+                        <button
+                          onClick={() => handleSearchResultNavigation("before", "next")}
+                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 overflow-auto p-4">
+                    {searchResults.before.length > 0 ? (
+                      <div className="font-mono text-xs">
+                        {(() => {
+                          const result = searchResults.before[searchResultIndices.before];
+                          const startLineNumber = result.line_number - result.context_before.length;
+                          let currentLineNumber = startLineNumber;
+                          
+                          return (
+                            <>
+                              {/* Context before */}
+                              {result.context_before.map((line, i) => (
+                                <div key={`before-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                              {/* Highlighted match */}
+                              <div className="flex bg-yellow-200 dark:bg-yellow-800 text-gray-900 dark:text-gray-100 font-bold">
+                                <span className="w-12 text-right pr-2 text-gray-700 dark:text-gray-300 flex-shrink-0">
+                                  {currentLineNumber++}
+                                </span>
+                                <span className="flex-1">{result.line_content}</span>
+                              </div>
+                              {/* Context after */}
+                              {result.context_after.map((line, i) => (
+                                <div key={`after-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="text-gray-500 dark:text-gray-400 text-sm">No matches found</div>
+                    )}
+                  </div>
+                </div>
+                
+                {/* After Log Results */}
+                <div className="w-1/3 flex flex-col">
+                  <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600 flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                      After Log ({searchResults.after.length} results)
+                    </h4>
+                    {searchResults.after.length > 1 && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleSearchResultNavigation("after", "prev")}
+                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          ←
+                        </button>
+                        <span className="text-xs text-gray-500">
+                          {searchResultIndices.after + 1}/{searchResults.after.length}
+                        </span>
+                        <button
+                          onClick={() => handleSearchResultNavigation("after", "next")}
+                          className="p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 overflow-auto p-4">
+                    {searchResults.after.length > 0 ? (
+                      <div className="font-mono text-xs">
+                        {(() => {
+                          const result = searchResults.after[searchResultIndices.after];
+                          const startLineNumber = result.line_number - result.context_before.length;
+                          let currentLineNumber = startLineNumber;
+                          
+                          return (
+                            <>
+                              {/* Context before */}
+                              {result.context_before.map((line, i) => (
+                                <div key={`before-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                              {/* Highlighted match */}
+                              <div className="flex bg-yellow-200 dark:bg-yellow-800 text-gray-900 dark:text-gray-100 font-bold">
+                                <span className="w-12 text-right pr-2 text-gray-700 dark:text-gray-300 flex-shrink-0">
+                                  {currentLineNumber++}
+                                </span>
+                                <span className="flex-1">{result.line_content}</span>
+                              </div>
+                              {/* Context after */}
+                              {result.context_after.map((line, i) => (
+                                <div key={`after-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="text-gray-500 dark:text-gray-400 text-sm">No matches found</div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}

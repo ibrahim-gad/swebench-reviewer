@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "swe-reviewer",
+        "title": "SWE Reviewer",
         "width": 1920,
         "height": 1000,
         "maximized": true
