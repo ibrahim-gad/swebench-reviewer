@@ -173,15 +173,13 @@ export default function Layout({ children }: LayoutProps) {
 
         </div>
 
-        {/* Greeting on right if authenticated */}
-        {isAuthenticated && (
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="text-base font-medium text-blue-700 dark:text-blue-300 whitespace-nowrap hover:text-blue-800 dark:hover:text-blue-200 transition-colors cursor-pointer"
-          >
-            Hello {userName}
-          </button>
-        )}
+        {/* Settings button - always visible */}
+        <button
+          onClick={() => setIsSettingsOpen(true)}
+          className="text-base font-medium text-blue-700 dark:text-blue-300 whitespace-nowrap hover:text-blue-800 dark:hover:text-blue-200 transition-colors cursor-pointer"
+        >
+          {isAuthenticated ? `Hello ${userName}` : "Settings"}
+        </button>
       </div>
 
       {/* Main Content */}
@@ -243,6 +241,7 @@ export default function Layout({ children }: LayoutProps) {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         onLogout={handleLogout}
+        isAuthenticated={isAuthenticated || false}
       />
     </div>
   );

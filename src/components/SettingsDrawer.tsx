@@ -5,9 +5,10 @@ interface SettingsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   onLogout: () => void;
+  isAuthenticated: boolean;
 }
 
-export default function SettingsDrawer({ isOpen, onClose, onLogout }: SettingsDrawerProps) {
+export default function SettingsDrawer({ isOpen, onClose, onLogout, isAuthenticated }: SettingsDrawerProps) {
   const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
@@ -181,14 +182,16 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout }: SettingsDr
           </div>
 
           {/* Footer with Logout - Fixed at bottom */}
-          <div className="p-6 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
-            <button
-              onClick={handleLogout}
-              className="w-full px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-            >
-              Logout
-            </button>
-          </div>
+          {isAuthenticated && (
+            <div className="p-6 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
+              <button
+                onClick={handleLogout}
+                className="w-full px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+              >
+                Logout
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>
