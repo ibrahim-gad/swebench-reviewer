@@ -14,11 +14,14 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout, isAuthentica
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [tempDirSize, setTempDirSize] = useState<number>(0);
+  const [isClearingTemp, setIsClearingTemp] = useState(false);
 
   // Load settings when drawer opens
   useEffect(() => {
     if (isOpen) {
       loadSettings();
+      loadTempDirSize();
     }
   }, [isOpen]);
 
@@ -32,6 +35,15 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout, isAuthentica
       setOpenaiApiKey(openaiKey || "");
     } catch (error) {
       console.error("Failed to load settings:", error);
+    }
+  };
+
+  const loadTempDirSize = async () => {
+    try {
+      const size = await invoke<number>("get_temp_dir_size");
+      setTempDirSize(size);
+    } catch (error) {
+      console.error("Failed to load temp directory size:", error);
     }
   };
 
@@ -71,6 +83,32 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout, isAuthentica
       console.error("Failed to logout:", error);
       alert("Failed to logout: " + error);
     }
+  };
+
+  const handleClearTemp = async () => {
+    if (!confirm("Are you sure you want to clear the temporary directory? This will remove all cached files.")) {
+      return;
+    }
+
+    setIsClearingTemp(true);
+    try {
+      await invoke("clear_temp_dir");
+      setTempDirSize(0);
+      alert("Temporary directory cleared successfully!");
+    } catch (error) {
+      console.error("Failed to clear temp directory:", error);
+      alert("Failed to clear temp directory: " + error);
+    } finally {
+      setIsClearingTemp(false);
+    }
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
   };
 
   return (
@@ -181,9 +219,16 @@ export default function SettingsDrawer({ isOpen, onClose, onLogout, isAuthentica
             </div>
           </div>
 
-          {/* Footer with Logout - Fixed at bottom */}
+          {/* Footer with Logout and Clear Temp - Fixed at bottom */}
           {isAuthenticated && (
-            <div className="p-6 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
+            <div className="p-6 border-t border-gray-200 dark:border-gray-700 flex-shrink-0 space-y-3">
+              <button
+                onClick={handleClearTemp}
+                disabled={isClearingTemp || tempDirSize === 0}
+                className="w-full px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-400 text-white rounded-md font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2"
+              >
+                {isClearingTemp ? "Clearing..." : `Clear Temp (${formatBytes(tempDirSize)})`}
+              </button>
               <button
                 onClick={handleLogout}
                 className="w-full px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"

@@ -57,3 +57,50 @@ pub fn debug_settings() -> Result<String, String> {
     
     Ok(format!("Settings file path: {:?}\nContent: {}", settings_path, content))
 }
+
+pub fn get_temp_dir_path() -> PathBuf {
+    // Create a temporary directory to get the same parent as used in report_checker
+    let temp_dir = std::env::temp_dir();
+    temp_dir.join("swe-reviewer-temp")
+}
+
+pub fn get_temp_dir_size() -> Result<u64, String> {
+    let temp_dir = get_temp_dir_path();
+    if !temp_dir.exists() {
+        return Ok(0);
+    }
+    
+    let mut total_size = 0u64;
+    
+    fn calculate_dir_size(dir: &PathBuf, total_size: &mut u64) -> Result<(), String> {
+        if dir.is_dir() {
+            for entry in fs::read_dir(dir)
+                .map_err(|e| format!("Failed to read directory: {}", e))? 
+            {
+                let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+                let path = entry.path();
+                
+                if path.is_dir() {
+                    calculate_dir_size(&path, total_size)?;
+                } else {
+                    let metadata = fs::metadata(&path)
+                        .map_err(|e| format!("Failed to read metadata: {}", e))?;
+                    *total_size += metadata.len();
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    calculate_dir_size(&temp_dir, &mut total_size)?;
+    Ok(total_size)
+}
+
+pub fn clear_temp_dir() -> Result<(), String> {
+    let temp_dir = get_temp_dir_path();
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir)
+            .map_err(|e| format!("Failed to remove temp directory: {}", e))?;
+    }
+    Ok(())
+}

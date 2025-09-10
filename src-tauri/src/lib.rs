@@ -58,6 +58,16 @@ fn debug_settings() -> Result<String, String> {
     settings::debug_settings()
 }
 
+#[tauri::command]
+fn get_temp_dir_size() -> Result<u64, String> {
+    settings::get_temp_dir_size()
+}
+
+#[tauri::command]
+fn clear_temp_dir() -> Result<(), String> {
+    settings::clear_temp_dir()
+}
+
 // Tauri command entry points - Report Checker
 #[tauri::command]
 async fn validate_deliverable(folder_link: String) -> Result<ValidationResult, String> {
@@ -121,8 +131,18 @@ pub fn run() {
             read_analysis_file,
             get_test_lists,
             search_logs,
-            debug_settings
+            debug_settings,
+            get_temp_dir_size,
+            clear_temp_dir
         ])
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Clear temp directory when app is closing
+                if let Err(e) = settings::clear_temp_dir() {
+                    eprintln!("Failed to clear temp directory on app close: {}", e);
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
