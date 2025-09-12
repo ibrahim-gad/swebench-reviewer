@@ -110,6 +110,11 @@ export default function ReportCheckerPage() {
   const [selectedFailToPassIndex, setSelectedFailToPassIndex] = useState(0);
   const [selectedPassToPassIndex, setSelectedPassToPassIndex] = useState(0);
   const [currentSelection, setCurrentSelection] = useState<"fail_to_pass" | "pass_to_pass">("fail_to_pass");
+  
+  // Filter state
+  const [failToPassFilter, setFailToPassFilter] = useState("");
+  const [passToPassFilter, setPassToPassFilter] = useState("");
+  
   const [searchResults, setSearchResults] = useState<{
     base: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
     before: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
@@ -120,6 +125,27 @@ export default function ReportCheckerPage() {
     before: 0,
     after: 0
   });
+
+  // Filtered test arrays
+  const filteredFailToPassTests = failToPassTests.filter(test => 
+    test.toLowerCase().includes(failToPassFilter.toLowerCase())
+  );
+  const filteredPassToPassTests = passToPassTests.filter(test => 
+    test.toLowerCase().includes(passToPassFilter.toLowerCase())
+  );
+
+  // Reset selection indices when filters change
+  useEffect(() => {
+    if (selectedFailToPassIndex >= filteredFailToPassTests.length) {
+      setSelectedFailToPassIndex(0);
+    }
+  }, [failToPassFilter, filteredFailToPassTests.length, selectedFailToPassIndex]);
+
+  useEffect(() => {
+    if (selectedPassToPassIndex >= filteredPassToPassTests.length) {
+      setSelectedPassToPassIndex(0);
+    }
+  }, [passToPassFilter, filteredPassToPassTests.length, selectedPassToPassIndex]);
 
   const resetState = () => {
     setDeliverableLink("");
@@ -151,6 +177,9 @@ export default function ReportCheckerPage() {
     setCurrentSelection("fail_to_pass");
     setSearchResults({ base: [], before: [], after: [] });
     setSearchResultIndices({ base: 0, before: 0, after: 0 });
+    // Reset filter state
+    setFailToPassFilter("");
+    setPassToPassFilter("");
   };
 
   const updateStageStatus = (stage: ProcessingStage, status: StageStatus) => {
@@ -1141,12 +1170,26 @@ export default function ReportCheckerPage() {
                   {/* Fail to Pass Tests */}
                   <div className="w-1/2 border-r border-gray-200 dark:border-gray-700 flex flex-col">
                     <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600">
-                      <h4 className="font-medium text-gray-900 dark:text-white text-sm">
-                        Fail to Pass Tests ({failToPassTests.length})
-                      </h4>
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="font-medium text-gray-900 dark:text-white text-sm flex-shrink-0">
+                          Fail to Pass Tests ({filteredFailToPassTests.length}/{failToPassTests.length})
+                        </h4>
+                        <input
+                          type="text"
+                          placeholder="Filter tests..."
+                          value={failToPassFilter}
+                          onChange={(e) => setFailToPassFilter(e.target.value)}
+                          className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400"
+                        />
+                      </div>
                     </div>
                     <div className="flex-1 overflow-auto">
-                      {failToPassTests.map((test, index) => (
+                      {filteredFailToPassTests.length === 0 ? (
+                        <div className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
+                          {failToPassFilter ? "No tests match the filter" : "No tests available"}
+                        </div>
+                      ) : (
+                        filteredFailToPassTests.map((test, index) => (
                         <div
                           key={index}
                           id={`fail_to_pass-item-${index}`}
@@ -1166,19 +1209,34 @@ export default function ReportCheckerPage() {
                           </span>
                           <span className="flex-1">{test}</span>
                         </div>
-                      ))}
+                        ))
+                      )}
                     </div>
                   </div>
                   
                   {/* Pass to Pass Tests */}
                   <div className="w-1/2 flex flex-col">
                     <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600">
-                      <h4 className="font-medium text-gray-900 dark:text-white text-sm">
-                        Pass to Pass Tests ({passToPassTests.length})
-                      </h4>
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="font-medium text-gray-900 dark:text-white text-sm flex-shrink-0">
+                          Pass to Pass Tests ({filteredPassToPassTests.length}/{passToPassTests.length})
+                        </h4>
+                        <input
+                          type="text"
+                          placeholder="Filter tests..."
+                          value={passToPassFilter}
+                          onChange={(e) => setPassToPassFilter(e.target.value)}
+                          className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400"
+                        />
+                      </div>
                     </div>
                     <div className="flex-1 overflow-auto">
-                      {passToPassTests.map((test, index) => (
+                      {filteredPassToPassTests.length === 0 ? (
+                        <div className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
+                          {passToPassFilter ? "No tests match the filter" : "No tests available"}
+                        </div>
+                      ) : (
+                        filteredPassToPassTests.map((test, index) => (
                         <div
                           key={index}
                           id={`pass_to_pass-item-${index}`}
@@ -1198,7 +1256,8 @@ export default function ReportCheckerPage() {
                           </span>
                           <span className="flex-1">{test}</span>
                         </div>
-                      ))}
+                        ))
+                      )}
                     </div>
                   </div>
                 </div>
