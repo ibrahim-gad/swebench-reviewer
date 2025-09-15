@@ -33,4 +33,6 @@ tempfile = "3.8"
 
 # For analysis and LLM integration
 uuid = { version = "1.0", features = ["v4"] }
+regex = "1.10"
+lazy_static = "1.4"
 

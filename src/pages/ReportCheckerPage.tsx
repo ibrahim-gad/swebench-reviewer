@@ -114,6 +114,10 @@ export default function ReportCheckerPage() {
   const [selectedPassToPassIndex, setSelectedPassToPassIndex] = useState(0);
   const [currentSelection, setCurrentSelection] = useState<"fail_to_pass" | "pass_to_pass">("fail_to_pass");
   
+  // Analysis processing state
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<any>(null);
+  
   // Filter state
   const [failToPassFilter, setFailToPassFilter] = useState("");
   const [passToPassFilter, setPassToPassFilter] = useState("");
@@ -129,13 +133,129 @@ export default function ReportCheckerPage() {
     after: 0
   });
 
-  // Filtered test arrays
-  const filteredFailToPassTests = failToPassTests.filter(test => 
-    test.toLowerCase().includes(failToPassFilter.toLowerCase())
-  );
-  const filteredPassToPassTests = passToPassTests.filter(test => 
-    test.toLowerCase().includes(passToPassFilter.toLowerCase())
-  );
+  // Helper function to get test status from analysis result
+  const getTestStatus = (testName: string, testType: "f2p" | "p2p") => {
+    if (!analysisResult) return null;
+    
+    const analysis = testType === "f2p" 
+      ? analysisResult.f2p_analysis?.[testName]
+      : analysisResult.p2p_analysis?.[testName];
+    
+    if (!analysis) return null;
+    
+    return {
+      base: analysis.base || "missing",
+      before: analysis.before || "missing", 
+      after: analysis.after || "missing"
+    };
+  };
+
+  // Helper function to check if test has rule violations
+  const hasRuleViolations = (testName: string) => {
+    if (!analysisResult) return false;
+    
+    const ruleChecks = analysisResult.rule_checks;
+    if (!ruleChecks) return false;
+    
+    // Check if test appears in any rule violation examples
+    for (const ruleKey of Object.keys(ruleChecks)) {
+      const rule = ruleChecks[ruleKey];
+      if (rule.has_problem && rule.examples && rule.examples.includes(testName)) {
+        return true;
+      }
+    }
+    
+    return false;
+  };
+
+  // Helper function to get specific error messages for a test
+  const getTestErrorMessages = (testName: string): string[] => {
+    if (!analysisResult) return [];
+    
+    const ruleChecks = analysisResult.rule_checks;
+    if (!ruleChecks) return [];
+    
+    const errorMessages: string[] = [];
+    const errorMessageMap: { [key: string]: string } = {
+      "c1_failed_in_base_present_in_P2P": "At least one failed test in base log is present in P2P",
+      "c2_failed_in_after_present_in_F2P_or_P2P": "At least one failed test in after log is present in F2P / P2P",
+      "c3_F2P_success_in_before": "At least one F2P test is present and successful in before log",
+      "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is failing in before",
+      "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)"
+    };
+    
+    // Check if test appears in any rule violation examples
+    for (const ruleKey of Object.keys(ruleChecks)) {
+      const rule = ruleChecks[ruleKey];
+      if (rule.has_problem && rule.examples && rule.examples.includes(testName)) {
+        const errorMessage = errorMessageMap[ruleKey];
+        if (errorMessage) {
+          errorMessages.push(errorMessage);
+        }
+      }
+    }
+    
+    return errorMessages;
+  };
+
+  // Helper function to render status icon
+  const renderStatusIcon = (status: string) => {
+    switch (status) {
+      case "passed":
+        return (
+          <div className="w-4 h-4 flex items-center justify-center bg-green-100 dark:bg-green-900/50 rounded-full">
+            <svg className="w-2.5 h-2.5 text-green-600 dark:text-green-400" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+          </div>
+        );
+      case "failed":
+        return (
+          <div className="w-4 h-4 flex items-center justify-center bg-red-100 dark:bg-red-900/50 rounded-full">
+            <svg className="w-2.5 h-2.5 text-red-600 dark:text-red-400" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </div>
+        );
+      case "ignored":
+        return (
+          <div className="w-4 h-4 flex items-center justify-center bg-yellow-100 dark:bg-yellow-900/50 rounded-full">
+            <svg className="w-2.5 h-2.5 text-yellow-600 dark:text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+          </div>
+        );
+      default: // missing
+        return (
+          <div className="w-4 h-4 flex items-center justify-center bg-gray-100 dark:bg-gray-700 rounded-full">
+            <svg className="w-2.5 h-2.5 text-gray-400 dark:text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+            </svg>
+          </div>
+        );
+    }
+  };
+
+  // Filtered test arrays with sorting (errors first)
+  const filteredFailToPassTests = failToPassTests
+    .filter(test => test.toLowerCase().includes(failToPassFilter.toLowerCase()))
+    .sort((a, b) => {
+      const aHasError = hasRuleViolations(a);
+      const bHasError = hasRuleViolations(b);
+      if (aHasError && !bHasError) return -1;
+      if (!aHasError && bHasError) return 1;
+      return a.localeCompare(b);
+    });
+    
+  const filteredPassToPassTests = passToPassTests
+    .filter(test => test.toLowerCase().includes(passToPassFilter.toLowerCase()))
+    .sort((a, b) => {
+      const aHasError = hasRuleViolations(a);
+      const bHasError = hasRuleViolations(b);
+      if (aHasError && !bHasError) return -1;
+      if (!aHasError && bHasError) return 1;
+      return a.localeCompare(b);
+    });
 
   // Reset selection indices when filters change
   useEffect(() => {
@@ -185,6 +305,9 @@ export default function ReportCheckerPage() {
     // Reset filter state
     setFailToPassFilter("");
     setPassToPassFilter("");
+    // Reset analysis state
+    setIsAnalyzing(false);
+    setAnalysisResult(null);
   };
 
   const updateStageStatus = (stage: ProcessingStage, status: StageStatus) => {
@@ -310,6 +433,13 @@ export default function ReportCheckerPage() {
     }
   }, [result]);
 
+  // Start analysis when Tests Checker tab is opened
+  useEffect(() => {
+    if (activeMainTab === "manual_checker" && result && !isAnalyzing && !analysisResult) {
+      startAnalysis();
+    }
+  }, [activeMainTab, result, isAnalyzing, analysisResult]);
+
   // Parse analysis data when analysis files are loaded
   useEffect(() => {
     if (fileContents.base_analysis && fileContents.before_analysis && fileContents.after_analysis) {
@@ -414,6 +544,25 @@ export default function ReportCheckerPage() {
       }
     } catch (error) {
       console.error("Failed to load test lists:", error);
+    }
+  };
+
+  const startAnalysis = async () => {
+    if (!result?.file_paths || result.file_paths.length === 0) return;
+    
+    setIsAnalyzing(true);
+    setError(null);
+    
+    try {
+      console.log("Starting log analysis with file paths:", result.file_paths);
+      const analysisData = await invoke("analyze_logs", { filePaths: result.file_paths }) as any;
+      console.log("Analysis completed:", analysisData);
+      setAnalysisResult(analysisData);
+    } catch (error) {
+      console.error("Analysis failed:", error);
+      setError(`Analysis failed: ${error}`);
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -1067,7 +1216,12 @@ export default function ReportCheckerPage() {
             {/* Back button */}
             <button
               onClick={resetState}
-              className="flex items-center gap-2 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors text-sm whitespace-nowrap"
+              disabled={isAnalyzing}
+              className={`flex items-center gap-2 transition-colors text-sm whitespace-nowrap ${
+                isAnalyzing 
+                  ? "text-gray-400 dark:text-gray-600 cursor-not-allowed" 
+                  : "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
+              }`}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
@@ -1080,13 +1234,19 @@ export default function ReportCheckerPage() {
               <div className="flex space-x-1 bg-gray-100 dark:bg-gray-700 p-1 rounded">
                 <button
                   onClick={() => setActiveMainTabWithMemory("manual_checker")}
-                  className={`px-6 py-2.5 rounded font-medium text-sm transition-all duration-200 ${
+                  className={`px-6 py-2.5 rounded font-medium text-sm transition-all duration-200 flex items-center gap-2 ${
                     activeMainTab === "manual_checker"
                       ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
                       : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
                   }`}
                 >
                   Tests Checker
+                  {isAnalyzing && activeMainTab === "manual_checker" && (
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  )}
                 </button>
                 {/* COMMENTED OUT - AGENTIC FUNCTIONALITY */}
                 {/*
@@ -1116,22 +1276,52 @@ export default function ReportCheckerPage() {
 
             {/* Copy Selected Test Name - Only show in Tests Checker tab */}
             {activeMainTab === "manual_checker" && (failToPassTests.length > 0 || passToPassTests.length > 0) && (
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-600 dark:text-gray-400 font-mono max-w-xs truncate">
-                  {currentSelection === "fail_to_pass" 
+              <div className="flex flex-col gap-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600 dark:text-gray-400 font-mono max-w-xs truncate">
+                    {currentSelection === "fail_to_pass" 
+                      ? failToPassTests[selectedFailToPassIndex]
+                      : passToPassTests[selectedPassToPassIndex]
+                    }
+                  </span>
+                  <button
+                    onClick={copyTestName}
+                    className="p-1.5 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                    title="Copy test name"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                </div>
+                
+                {/* Error Messages Display */}
+                {(() => {
+                  const currentTestName = currentSelection === "fail_to_pass" 
                     ? failToPassTests[selectedFailToPassIndex]
-                    : passToPassTests[selectedPassToPassIndex]
+                    : passToPassTests[selectedPassToPassIndex];
+                  const errorMessages = getTestErrorMessages(currentTestName);
+                  
+                  if (errorMessages.length > 0) {
+                    return (
+                      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md px-2">
+                        <div className="flex items-start gap-0">
+    
+                          <div className="flex-1">
+                            <div className="space-y-0">
+                              {errorMessages.map((message, index) => (
+                                <div key={index} className="text-xs text-red-700 dark:text-red-300">
+                                  {message}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
                   }
-                </span>
-                <button
-                  onClick={copyTestName}
-                  className="p-1.5 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                  title="Copy test name"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                </button>
+                  return null;
+                })()}
               </div>
             )}
 
@@ -1272,27 +1462,50 @@ export default function ReportCheckerPage() {
                           {failToPassFilter ? "No tests match the filter" : "No tests available"}
                         </div>
                       ) : (
-                        filteredFailToPassTests.map((test, index) => (
-                        <div
-                          key={index}
-                          id={`fail_to_pass-item-${index}`}
-                          className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex ${
-                            currentSelection === "fail_to_pass" && selectedFailToPassIndex === index
-                              ? "bg-blue-100 dark:bg-blue-900/50 text-blue-900 dark:text-blue-100"
-                              : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
-                          }`}
-                          onClick={() => {
-                            setCurrentSelection("fail_to_pass");
-                            setSelectedFailToPassIndex(index);
-                            searchForTest(test);
-                          }}
-                        >
-                          <span className="w-8 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0 font-mono text-xs">
-                            {index + 1}
-                          </span>
-                          <span className="flex-1">{test}</span>
-                        </div>
-                        ))
+                        filteredFailToPassTests.map((test, index) => {
+                          const testStatus = getTestStatus(test, "f2p");
+                          const hasError = hasRuleViolations(test);
+                          
+                          return (
+                            <div
+                              key={index}
+                              id={`fail_to_pass-item-${index}`}
+                              className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex items-center ${
+                                currentSelection === "fail_to_pass" && selectedFailToPassIndex === index
+                                  ? "bg-blue-100 dark:bg-blue-900/50 text-blue-900 dark:text-blue-100"
+                                  : hasError
+                                    ? "bg-red-50 dark:bg-red-900/20 text-gray-700 dark:text-gray-300 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                              }`}
+                              onClick={() => {
+                                setCurrentSelection("fail_to_pass");
+                                setSelectedFailToPassIndex(index);
+                                searchForTest(test);
+                              }}
+                            >
+                              <span className="w-8 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0 font-mono text-xs">
+                                {index + 1}
+                              </span>
+                              <span className="flex-1 truncate">{test}</span>
+                              <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                                {testStatus && (
+                                  <>
+                                    {renderStatusIcon(testStatus.base)}
+                                    {renderStatusIcon(testStatus.before)}
+                                    {renderStatusIcon(testStatus.after)}
+                                  </>
+                                )}
+                                {hasError && (
+                                  <div className="w-4 h-4 flex items-center justify-center bg-red-100 dark:bg-red-900/50 rounded-full ml-1">
+                                    <svg className="w-2.5 h-2.5 text-red-600 dark:text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
                       )}
                     </div>
                   </div>
@@ -1319,27 +1532,50 @@ export default function ReportCheckerPage() {
                           {passToPassFilter ? "No tests match the filter" : "No tests available"}
                         </div>
                       ) : (
-                        filteredPassToPassTests.map((test, index) => (
-                        <div
-                          key={index}
-                          id={`pass_to_pass-item-${index}`}
-                          className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex ${
-                            currentSelection === "pass_to_pass" && selectedPassToPassIndex === index
-                              ? "bg-green-100 dark:bg-green-900/50 text-green-900 dark:text-green-100"
-                              : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
-                          }`}
-                          onClick={() => {
-                            setCurrentSelection("pass_to_pass");
-                            setSelectedPassToPassIndex(index);
-                            searchForTest(test);
-                          }}
-                        >
-                          <span className="w-8 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0 font-mono text-xs">
-                            {index + 1}
-                          </span>
-                          <span className="flex-1">{test}</span>
-                        </div>
-                        ))
+                        filteredPassToPassTests.map((test, index) => {
+                          const testStatus = getTestStatus(test, "p2p");
+                          const hasError = hasRuleViolations(test);
+                          
+                          return (
+                            <div
+                              key={index}
+                              id={`pass_to_pass-item-${index}`}
+                              className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex items-center ${
+                                currentSelection === "pass_to_pass" && selectedPassToPassIndex === index
+                                  ? "bg-green-100 dark:bg-green-900/50 text-green-900 dark:text-green-100"
+                                  : hasError
+                                    ? "bg-red-50 dark:bg-red-900/20 text-gray-700 dark:text-gray-300 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                              }`}
+                              onClick={() => {
+                                setCurrentSelection("pass_to_pass");
+                                setSelectedPassToPassIndex(index);
+                                searchForTest(test);
+                              }}
+                            >
+                              <span className="w-8 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0 font-mono text-xs">
+                                {index + 1}
+                              </span>
+                              <span className="flex-1 truncate">{test}</span>
+                              <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                                {testStatus && (
+                                  <>
+                                    {renderStatusIcon(testStatus.base)}
+                                    {renderStatusIcon(testStatus.before)}
+                                    {renderStatusIcon(testStatus.after)}
+                                  </>
+                                )}
+                                {hasError && (
+                                  <div className="w-4 h-4 flex items-center justify-center bg-red-100 dark:bg-red-900/50 rounded-full ml-1">
+                                    <svg className="w-2.5 h-2.5 text-red-600 dark:text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
                       )}
                     </div>
                   </div>

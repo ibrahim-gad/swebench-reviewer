@@ -3703,6 +3703,8 @@ name = "swe-reviewer"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "lazy_static",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -1,6 +1,38 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use crate::settings::load_setting;
+use lazy_static::lazy_static;
+use regex::Regex;
+
+// Compile regex patterns once at module level to avoid repeated compilation
+lazy_static! {
+    static ref TEST_LINE_RE: Regex = Regex::new(r"\btest\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored)")
+        .expect("Failed to compile TEST_LINE_RE regex");
+    
+    static ref TEST_START_RE: Regex = Regex::new(r"\btest\s+(.+?)\s+\.\.\.\s*(.*?)$")
+        .expect("Failed to compile TEST_START_RE regex");
+    
+    static ref STATUS_RE: Regex = Regex::new(r"\b(ok|failed|ignored)\b")
+        .expect("Failed to compile STATUS_RE regex");
+    
+    static ref STATUS_AT_END_RE: Regex = Regex::new(r"\b(ok|failed|ignored)\s*$")
+        .expect("Failed to compile STATUS_AT_END_RE regex");
+    
+    static ref ANOTHER_TEST_RE: Regex = Regex::new(r"\btest\s+[\w:]+\s+\.\.\.\s*")
+        .expect("Failed to compile ANOTHER_TEST_RE regex");
+    
+    static ref TEST_WITH_O_RE: Regex = Regex::new(r"\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*o\s*$")
+        .expect("Failed to compile TEST_WITH_O_RE regex");
+    
+    static ref TEST_STARTS_RE: Regex = Regex::new(r"\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*")
+        .expect("Failed to compile TEST_STARTS_RE regex");
+    
+    static ref STATUS_IN_TEXT_RE: Regex = Regex::new(r"\b(ok|failed|ignored)\b")
+        .expect("Failed to compile STATUS_IN_TEXT_RE regex");
+    
+    static ref FAILURES_BLOCK_RE: Regex = Regex::new(r"^\s{4}(.+?)\s*$")
+        .expect("Failed to compile FAILURES_BLOCK_RE regex");
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct AnalysisResult {
@@ -394,7 +426,7 @@ async fn analyze_log_with_openai(
     println!("Log file read successfully, size: {} bytes", log_content.len());
     
     // Chunk the log content for processing
-    let chunk_size = 250; // 10KB chunks for more reliable processing
+    let chunk_size = 50000; // 50KB chunks for more reliable processing
     let chunks = chunk_log_content(&log_content, chunk_size);
     println!("Split log into {} chunks for processing", chunks.len());
     
@@ -572,6 +604,72 @@ pub fn search_logs(file_paths: Vec<String>, test_name: String) -> Result<LogSear
     })
 }
 
+pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, String> {
+    println!("Starting log analysis with file paths: {:?}", file_paths);
+    
+    // Find and parse main.json
+    let main_json_path = file_paths.iter()
+        .find(|path| path.to_lowercase().contains("main.json") || path.to_lowercase().contains("main/"))
+        .ok_or("main.json file not found in provided paths".to_string())?;
+    
+    println!("Found main.json at: {}", main_json_path);
+    
+    let main_json_content = fs::read_to_string(main_json_path)
+        .map_err(|e| format!("Failed to read main.json: {}", e))?;
+    
+    let main_json: serde_json::Value = serde_json::from_str(&main_json_content)
+        .map_err(|e| format!("Failed to parse main.json: {}", e))?;
+    
+    // Extract fail_to_pass and pass_to_pass arrays
+    let empty_vec: Vec<serde_json::Value> = vec![];
+    let fail_to_pass: Vec<String> = main_json.get("fail_to_pass")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty_vec)
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|s| s.to_string())
+        .collect();
+    
+    let pass_to_pass: Vec<String> = main_json.get("pass_to_pass")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty_vec)
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|s| s.to_string())
+        .collect();
+    
+    println!("Found {} fail_to_pass tests and {} pass_to_pass tests", 
+             fail_to_pass.len(), pass_to_pass.len());
+    
+    // Find log files
+    let base_log = file_paths.iter().find(|path| path.to_lowercase().contains("base.log"));
+    let before_log = file_paths.iter().find(|path| path.to_lowercase().contains("before.log"));
+    let after_log = file_paths.iter().find(|path| path.to_lowercase().contains("after.log"));
+    
+    if base_log.is_none() || before_log.is_none() || after_log.is_none() {
+        return Err("Missing required log files (base.log, before.log, after.log)".to_string());
+    }
+    
+    // Parse log files using the Rust test parser logic
+    let base_parsed = parse_rust_log_file(base_log.unwrap())?;
+    let before_parsed = parse_rust_log_file(before_log.unwrap())?;
+    let after_parsed = parse_rust_log_file(after_log.unwrap())?;
+    
+    // Generate analysis result similar to swebench-log-analyzer-rust
+    let analysis_result = generate_analysis_result(
+        &base_parsed,
+        &before_parsed, 
+        &after_parsed,
+        &pass_to_pass,
+        &fail_to_pass,
+        base_log.unwrap(),
+        before_log.unwrap(),
+        after_log.unwrap()
+    );
+    
+    Ok(analysis_result)
+}
+
 fn search_in_log_file(file_path: &str, test_name: &str) -> Result<Vec<SearchResult>, String> {
     println!("Searching in log file: {} for test: {}", file_path, test_name);
     
@@ -638,4 +736,407 @@ fn get_search_terms(test_name: &str) -> Vec<String> {
     search_terms.dedup();
     
     search_terms
+}
+
+#[derive(Debug)]
+struct ParsedLog {
+    passed: std::collections::HashSet<String>,
+    failed: std::collections::HashSet<String>,
+    ignored: std::collections::HashSet<String>,
+    all: std::collections::HashSet<String>,
+}
+
+fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
+    let content = fs::read_to_string(file_path)
+        .map_err(|e| format!("Failed to read log file {}: {}", file_path, e))?;
+    
+    let mut passed = std::collections::HashSet::new();
+    let mut failed = std::collections::HashSet::new();
+    let mut ignored = std::collections::HashSet::new();
+    let mut freq = std::collections::HashMap::new();
+    
+    let lines: Vec<&str> = content.lines().collect();
+    
+    // First pass: handle normal test lines with immediate results
+    for line in &lines {
+        if let Some(captures) = TEST_LINE_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let status = captures.get(2).unwrap().as_str().to_lowercase();
+            
+            *freq.entry(test_name.clone()).or_insert(0) += 1;
+            
+            match status.as_str() {
+                "ok" => { passed.insert(test_name); }
+                "failed" => { failed.insert(test_name); }
+                "ignored" => { ignored.insert(test_name); }
+                _ => {}
+            }
+        }
+    }
+    
+    // Second pass: handle cases where test result is on a separate line
+    let mut pending_tests = std::collections::HashMap::new();
+    
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(captures) = TEST_START_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let remainder = captures.get(2).unwrap().as_str();
+            
+            // Skip if we already found this test with a clear status
+            if passed.contains(&test_name) || failed.contains(&test_name) || ignored.contains(&test_name) {
+                continue;
+            }
+            
+            // If remainder doesn't contain a clear status, this test might have result later
+            if !STATUS_RE.is_match(remainder) {
+                pending_tests.insert(test_name, i);
+            }
+        }
+    }
+    
+    // For pending tests, search more aggressively for their results
+    for (test_name, start_line) in pending_tests {
+        
+        // Look in subsequent lines for the result, potentially many lines later
+        for j in start_line + 1..std::cmp::min(start_line + 200, lines.len()) {
+            let line = lines[j];
+            
+            // Check for standalone status words
+            let stripped = line.trim();
+            if stripped == "ok" || stripped == "FAILED" || stripped == "ignored" {
+                let status = stripped.to_lowercase();
+                *freq.entry(test_name.clone()).or_insert(0) += 1;
+                
+                match status.as_str() {
+                    "ok" => { passed.insert(test_name); }
+                    "failed" => { failed.insert(test_name); }
+                    "ignored" => { ignored.insert(test_name); }
+                    _ => {}
+                }
+                break;
+            }
+            
+            // Check for status words at the end of lines (after debug output)
+            if let Some(captures) = STATUS_AT_END_RE.captures(line) {
+                let status = captures.get(1).unwrap().as_str().to_lowercase();
+                *freq.entry(test_name.clone()).or_insert(0) += 1;
+                
+                match status.as_str() {
+                    "ok" => { passed.insert(test_name); }
+                    "failed" => { failed.insert(test_name); }
+                    "ignored" => { ignored.insert(test_name); }
+                    _ => {}
+                }
+                break;
+            }
+            
+            // Stop looking if we hit another test line (but allow some leeway)
+            if ANOTHER_TEST_RE.is_match(line) && j > start_line + 5 {
+                break;
+            }
+        }
+    }
+    
+    // Third pass: handle split status words like "o\nk"
+    for (i, line) in lines.iter().enumerate() {
+        // Look for lines that end with just "o" and check if next line starts with "k"
+        if line.trim() == "o" && i + 1 < lines.len() && lines[i + 1].trim() == "k" {
+            // Look backwards to find the corresponding test
+            for j in (0..i).rev().take(10) {
+                if let Some(captures) = TEST_WITH_O_RE.captures(lines[j]) {
+                    let test_name = captures.get(1).unwrap().as_str().to_string();
+                    if !passed.contains(&test_name) && !failed.contains(&test_name) && !ignored.contains(&test_name) {
+                        *freq.entry(test_name.clone()).or_insert(0) += 1;
+                        passed.insert(test_name);
+                    }
+                    break;
+                }
+            }
+        }
+        
+        // Also handle the case where test line itself ends with "... o" (split across lines)
+        if let Some(captures) = TEST_WITH_O_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            if i + 1 < lines.len() && lines[i + 1].trim() == "k" {
+                if !passed.contains(&test_name) && !failed.contains(&test_name) && !ignored.contains(&test_name) {
+                    *freq.entry(test_name.clone()).or_insert(0) += 1;
+                    passed.insert(test_name);
+                }
+            }
+        }
+    }
+    
+    // Fourth pass: scan for any missed test patterns with complex formatting
+    let mut test_starts = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(captures) = TEST_STARTS_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            test_starts.push((i, test_name));
+        }
+    }
+    
+    // For each test start, look for the corresponding result within a reasonable range
+    for (line_idx, test_name) in test_starts {
+        if passed.contains(&test_name) || failed.contains(&test_name) || ignored.contains(&test_name) {
+            continue;
+        }
+        
+        // Search forward through lines for the result
+        let mut search_text = String::new();
+        for j in line_idx..std::cmp::min(line_idx + 100, lines.len()) {
+            search_text.push_str(lines[j]);
+            search_text.push('\n');
+            
+            // Stop if we hit another test (but give some leeway for interleaved output)
+            if j > line_idx + 5 && TEST_STARTS_RE.is_match(lines[j]) {
+                break;
+            }
+        }
+        
+        // Look for status in this accumulated text
+        if let Some(captures) = STATUS_IN_TEXT_RE.captures(&search_text) {
+            let status = captures.get(1).unwrap().as_str().to_lowercase();
+            *freq.entry(test_name.clone()).or_insert(0) += 1;
+            
+            match status.as_str() {
+                "ok" => { passed.insert(test_name); }
+                "failed" => { failed.insert(test_name); }
+                "ignored" => { ignored.insert(test_name); }
+                _ => {}
+            }
+        }
+    }
+    
+    // Also read the "failures:" block to catch names not emitted on one-line form
+    let mut collecting = false;
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed == "failures:" {
+            collecting = true;
+            continue;
+        }
+        if collecting {
+            if trimmed.starts_with("error:") || trimmed.starts_with("test result:") {
+                collecting = false;
+                continue;
+            }
+            if let Some(captures) = FAILURES_BLOCK_RE.captures(line) {
+                let test_name = captures.get(1).unwrap().as_str().to_string();
+                if !test_name.starts_with("----") {
+                    failed.insert(test_name);
+                }
+                continue;
+            }
+            if trimmed.is_empty() || trimmed.starts_with("----") {
+                continue;
+            }
+            collecting = false;
+        }
+    }
+    
+    let mut all = std::collections::HashSet::new();
+    all.extend(passed.iter().cloned());
+    all.extend(failed.iter().cloned());
+    all.extend(ignored.iter().cloned());
+    
+    Ok(ParsedLog {
+        passed,
+        failed,
+        ignored,
+        all,
+    })
+}
+
+fn status_lookup(names: &[String], parsed: &ParsedLog) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for name in names {
+        if parsed.failed.contains(name) {
+            out.insert(name.clone(), "failed".to_string());
+        } else if parsed.passed.contains(name) {
+            out.insert(name.clone(), "passed".to_string());
+        } else if parsed.ignored.contains(name) {
+            out.insert(name.clone(), "ignored".to_string());
+        } else {
+            out.insert(name.clone(), "missing".to_string());
+        }
+    }
+    out
+}
+
+fn generate_analysis_result(
+    base_parsed: &ParsedLog,
+    before_parsed: &ParsedLog,
+    after_parsed: &ParsedLog,
+    pass_to_pass: &[String],
+    fail_to_pass: &[String],
+    base_path: &str,
+    before_path: &str,
+    after_path: &str,
+) -> serde_json::Value {
+    let universe: Vec<String> = pass_to_pass.iter().chain(fail_to_pass.iter()).cloned().collect();
+    
+    let base_s = status_lookup(&universe, base_parsed);
+    let before_s = status_lookup(&universe, before_parsed);
+    let after_s = status_lookup(&universe, after_parsed);
+    
+    // Rule checks
+    let c1_hits: Vec<String> = pass_to_pass.iter()
+        .filter(|t| base_s.get(*t) == Some(&"failed".to_string()))
+        .cloned()
+        .collect();
+    let c1 = !c1_hits.is_empty();
+    
+    let c2_hits: Vec<String> = universe.iter()
+        .filter(|t| after_s.get(*t) == Some(&"failed".to_string()))
+        .cloned()
+        .collect();
+    let c2 = !c2_hits.is_empty();
+    
+    let c3_hits: Vec<String> = fail_to_pass.iter()
+        .filter(|t| before_s.get(*t) == Some(&"passed".to_string()))
+        .cloned()
+        .collect();
+    let c3 = !c3_hits.is_empty();
+    
+    let c4_hits: Vec<String> = pass_to_pass.iter()
+        .filter(|t| base_s.get(*t) == Some(&"missing".to_string()) && before_s.get(*t) != Some(&"passed".to_string()))
+        .cloned()
+        .collect();
+    let c4 = !c4_hits.is_empty();
+    
+    // For now, we'll set c5 to false (no duplicates detected)
+    let c5 = false;
+    
+    // P2P rejection logic
+    let p2p_ignored: Vec<String> = pass_to_pass.iter()
+        .filter(|t| base_s.get(*t) == Some(&"passed".to_string()) && after_s.get(*t) == Some(&"passed".to_string()))
+        .cloned()
+        .collect();
+    
+    let p2p_considered: Vec<String> = pass_to_pass.iter()
+        .filter(|t| !(base_s.get(*t) == Some(&"passed".to_string()) && after_s.get(*t) == Some(&"passed".to_string())))
+        .cloned()
+        .collect();
+    
+    let p2p_rejected: Vec<String> = p2p_considered.iter()
+        .filter(|t| base_s.get(*t) == Some(&"missing".to_string()) && before_s.get(*t) != Some(&"passed".to_string()))
+        .cloned()
+        .collect();
+    
+    let p2p_ok: Vec<String> = p2p_considered.iter()
+        .filter(|t| base_s.get(*t) == Some(&"missing".to_string()) && before_s.get(*t) == Some(&"passed".to_string()))
+        .cloned()
+        .collect();
+    
+    let f2p_ignored: Vec<String> = fail_to_pass.iter()
+        .filter(|t| after_s.get(*t) == Some(&"passed".to_string()))
+        .cloned()
+        .collect();
+    
+    let f2p_considered: Vec<String> = fail_to_pass.iter()
+        .filter(|t| after_s.get(*t) != Some(&"passed".to_string()))
+        .cloned()
+        .collect();
+    
+    let f2p_rejected: Vec<String> = fail_to_pass.iter()
+        .filter(|t| after_s.get(*t) == Some(&"failed".to_string()))
+        .cloned()
+        .collect();
+    
+    let f2p_ok: Vec<String> = fail_to_pass.iter()
+        .filter(|t| after_s.get(*t) == Some(&"missing".to_string()))
+        .cloned()
+        .collect();
+    
+    let rejection_satisfied = !p2p_rejected.is_empty();
+    
+    // Generate p2p_analysis
+    let mut p2p_analysis = serde_json::Map::new();
+    for test_name in pass_to_pass {
+        let mut test_data = serde_json::Map::new();
+        test_data.insert("base".to_string(), serde_json::Value::String(base_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        p2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
+    }
+    
+    // Generate f2p_analysis
+    let mut f2p_analysis = serde_json::Map::new();
+    for test_name in fail_to_pass {
+        let mut test_data = serde_json::Map::new();
+        test_data.insert("base".to_string(), serde_json::Value::String(base_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        f2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
+    }
+    
+    serde_json::json!({
+        "inputs": {
+            "base_log": base_path,
+            "before_log": before_path,
+            "after_log": after_path,
+        },
+        "counts": {
+            "P2P": pass_to_pass.len(),
+            "F2P": fail_to_pass.len()
+        },
+        "rule_checks": {
+            "c1_failed_in_base_present_in_P2P": {
+                "has_problem": c1,
+                "examples": c1_hits
+            },
+            "c2_failed_in_after_present_in_F2P_or_P2P": {
+                "has_problem": c2,
+                "examples": c2_hits
+            },
+            "c3_F2P_success_in_before": {
+                "has_problem": c3,
+                "examples": c3_hits
+            },
+            "c4_P2P_missing_in_base_and_not_passing_in_before": {
+                "has_problem": c4,
+                "examples": c4_hits
+            },
+            "c5_duplicates_in_same_log_for_F2P_or_P2P": {
+                "has_problem": c5,
+                "duplicate_examples_per_log": {}
+            },
+        },
+        "rejection_reason": {
+            "satisfied": rejection_satisfied,
+            "p2p_ignored_because_passed_in_base_and_after": p2p_ignored,
+            "p2p_considered": p2p_considered,
+            "p2p_rejected": p2p_rejected,
+            "p2p_considered_but_ok": p2p_ok,
+            "f2p_ignored_because_passed_in_after": f2p_ignored,
+            "f2p_considered": f2p_considered,
+            "f2p_rejected": f2p_rejected,
+            "f2p_considered_but_ok": f2p_ok,
+        },
+        "p2p_analysis": p2p_analysis,
+        "f2p_analysis": f2p_analysis,
+        "debug_log_counts": [
+            {
+                "label": "base",
+                "passed": base_parsed.passed.len(),
+                "failed": base_parsed.failed.len(),
+                "ignored": base_parsed.ignored.len(),
+                "all": base_parsed.all.len(),
+            },
+            {
+                "label": "before",
+                "passed": before_parsed.passed.len(),
+                "failed": before_parsed.failed.len(),
+                "ignored": before_parsed.ignored.len(),
+                "all": before_parsed.all.len(),
+            },
+            {
+                "label": "after",
+                "passed": after_parsed.passed.len(),
+                "failed": after_parsed.failed.len(),
+                "ignored": after_parsed.ignored.len(),
+                "all": after_parsed.all.len(),
+            },
+        ],
+    })
 }

@@ -110,6 +110,11 @@ fn search_logs(file_paths: Vec<String>, test_name: String) -> Result<LogSearchRe
     analysis::search_logs(file_paths, test_name)
 }
 
+#[tauri::command]
+async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, String> {
+    analysis::analyze_logs(file_paths).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -131,6 +136,7 @@ pub fn run() {
             read_analysis_file,
             get_test_lists,
             search_logs,
+            analyze_logs,
             debug_settings,
             get_temp_dir_size,
             clear_temp_dir
