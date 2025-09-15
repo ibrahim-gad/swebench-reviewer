@@ -608,29 +608,29 @@ export default function ReportCheckerPage() {
         if (currentSelection === "fail_to_pass") {
           const newIndex = Math.max(0, selectedFailToPassIndex - 1);
           setSelectedFailToPassIndex(newIndex);
-          if (failToPassTests[newIndex]) {
-            searchForTest(failToPassTests[newIndex]);
+          if (filteredFailToPassTests[newIndex]) {
+            searchForTest(filteredFailToPassTests[newIndex]);
           }
         } else {
           const newIndex = Math.max(0, selectedPassToPassIndex - 1);
           setSelectedPassToPassIndex(newIndex);
-          if (passToPassTests[newIndex]) {
-            searchForTest(passToPassTests[newIndex]);
+          if (filteredPassToPassTests[newIndex]) {
+            searchForTest(filteredPassToPassTests[newIndex]);
           }
         }
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
         if (currentSelection === "fail_to_pass") {
-          const newIndex = Math.min(failToPassTests.length - 1, selectedFailToPassIndex + 1);
+          const newIndex = Math.min(filteredFailToPassTests.length - 1, selectedFailToPassIndex + 1);
           setSelectedFailToPassIndex(newIndex);
-          if (failToPassTests[newIndex]) {
-            searchForTest(failToPassTests[newIndex]);
+          if (filteredFailToPassTests[newIndex]) {
+            searchForTest(filteredFailToPassTests[newIndex]);
           }
         } else {
-          const newIndex = Math.min(passToPassTests.length - 1, selectedPassToPassIndex + 1);
+          const newIndex = Math.min(filteredPassToPassTests.length - 1, selectedPassToPassIndex + 1);
           setSelectedPassToPassIndex(newIndex);
-          if (passToPassTests[newIndex]) {
-            searchForTest(passToPassTests[newIndex]);
+          if (filteredPassToPassTests[newIndex]) {
+            searchForTest(filteredPassToPassTests[newIndex]);
           }
         }
       } else if (event.key === "ArrowLeft") {
@@ -702,8 +702,8 @@ export default function ReportCheckerPage() {
 
   const copyTestName = async () => {
     const testName = currentSelection === "fail_to_pass" 
-      ? failToPassTests[selectedFailToPassIndex]
-      : passToPassTests[selectedPassToPassIndex];
+      ? filteredFailToPassTests[selectedFailToPassIndex]
+      : filteredPassToPassTests[selectedPassToPassIndex];
     
     if (testName) {
       try {
@@ -1280,8 +1280,8 @@ export default function ReportCheckerPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-gray-600 dark:text-gray-400 font-mono max-w-xs truncate">
                     {currentSelection === "fail_to_pass" 
-                      ? failToPassTests[selectedFailToPassIndex]
-                      : passToPassTests[selectedPassToPassIndex]
+                      ? filteredFailToPassTests[selectedFailToPassIndex]
+                      : filteredPassToPassTests[selectedPassToPassIndex]
                     }
                   </span>
                   <button
@@ -1298,8 +1298,8 @@ export default function ReportCheckerPage() {
                 {/* Error Messages Display */}
                 {(() => {
                   const currentTestName = currentSelection === "fail_to_pass" 
-                    ? failToPassTests[selectedFailToPassIndex]
-                    : passToPassTests[selectedPassToPassIndex];
+                    ? filteredFailToPassTests[selectedFailToPassIndex]
+                    : filteredPassToPassTests[selectedPassToPassIndex];
                   const errorMessages = getTestErrorMessages(currentTestName);
                   
                   if (errorMessages.length > 0) {
