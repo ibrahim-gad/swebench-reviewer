@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import MonacoEditor from '@monaco-editor/react';
 
@@ -77,7 +77,7 @@ export default function ReportCheckerPage() {
   const [result, setResult] = useState<ProcessingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("base");
-  const [activeMainTab, setActiveMainTab] = useState<MainTabKey>("input");
+  const [activeMainTab, setActiveMainTab] = useState<MainTabKey>("manual_checker");
   const [lastActiveTabs, setLastActiveTabs] = useState<{[key in MainTabKey]: TabKey}>({
     input: "base",
     // result: "analysis", // COMMENTED OUT AGENTIC FUNCTIONALITY
@@ -96,11 +96,14 @@ export default function ReportCheckerPage() {
     setActiveMainTab(mainTabKey);
     setActiveTab(lastActiveTabs[mainTabKey]);
   };
+
   const [fileContents, setFileContents] = useState<FileContents>({});
   const [loadingFiles, setLoadingFiles] = useState(false);
   // COMMENTED OUT - AGENTIC FUNCTIONALITY
   // const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [editableContents, setEditableContents] = useState<{[key in TabKey]?: string}>({});
+  const [scrollPositions, setScrollPositions] = useState<{[key in TabKey]?: {scrollTop: number, scrollLeft: number}}>({});
+  const editorRefs = useRef<{[key in TabKey]?: any}>({});
   // COMMENTED OUT - AGENTIC FUNCTIONALITY
   // const [analysisTableData, setAnalysisTableData] = useState<AnalysisTableData[]>([]);
 
@@ -158,7 +161,7 @@ export default function ReportCheckerPage() {
     setResult(null);
     setError(null);
     setActiveTab("base");
-    setActiveMainTab("input");
+    setActiveMainTab("manual_checker");
     setLastActiveTabs({
       input: "base",
       // result: "analysis", // COMMENTED OUT AGENTIC FUNCTIONALITY
@@ -168,6 +171,8 @@ export default function ReportCheckerPage() {
     setLoadingFiles(false);
     // setIsAnalyzing(false); // COMMENTED OUT - AGENTIC FUNCTIONALITY
     setEditableContents({});
+    setScrollPositions({});
+    editorRefs.current = {};
     // setAnalysisTableData([]); // COMMENTED OUT - AGENTIC FUNCTIONALITY
     // Reset manual checker state
     setFailToPassTests([]);
@@ -688,15 +693,41 @@ export default function ReportCheckerPage() {
       }));
     };
 
+    const handleEditorDidMount = (editor: any) => {
+      // Store editor reference
+      editorRefs.current[tabKey] = editor;
+      
+      // Add scroll listener to save positions
+      editor.onDidScrollChange(() => {
+        const scrollTop = editor.getScrollTop();
+        const scrollLeft = editor.getScrollLeft();
+        setScrollPositions(prev => ({
+          ...prev,
+          [tabKey]: { scrollTop, scrollLeft }
+        }));
+      });
+      
+      // Restore scroll position if it exists
+      const savedPosition = scrollPositions[tabKey];
+      if (savedPosition) {
+        setTimeout(() => {
+          editor.setScrollTop(savedPosition.scrollTop);
+          editor.setScrollLeft(savedPosition.scrollLeft);
+        }, 100);
+      }
+    };
+
     return (
       <div className="h-full flex flex-col">
         <div className="flex-1 border rounded-lg overflow-hidden">
           <MonacoEditor
+            key={`json-editor-${tabKey}`}
             height="100%"
             defaultLanguage="json"
             language="json"
             value={editableContents[tabKey] || content}
             onChange={handleEditorChange}
+            onMount={handleEditorDidMount}
             options={{
               readOnly: false,
               minimap: { enabled: false },
@@ -864,11 +895,63 @@ export default function ReportCheckerPage() {
   };
   END COMMENTED OUT - AGENTIC FUNCTIONALITY */
 
-  const renderTextContent = (content: string) => {
+  const renderTextEditor = (content: string, tabKey: TabKey) => {
+    const handleEditorDidMount = (editor: any) => {
+      // Store editor reference
+      editorRefs.current[tabKey] = editor;
+      
+      // Add scroll listener to save positions
+      editor.onDidScrollChange(() => {
+        const scrollTop = editor.getScrollTop();
+        const scrollLeft = editor.getScrollLeft();
+        setScrollPositions(prev => ({
+          ...prev,
+          [tabKey]: { scrollTop, scrollLeft }
+        }));
+      });
+      
+      // Restore scroll position if it exists
+      const savedPosition = scrollPositions[tabKey];
+      if (savedPosition) {
+        setTimeout(() => {
+          editor.setScrollTop(savedPosition.scrollTop);
+          editor.setScrollLeft(savedPosition.scrollLeft);
+        }, 100);
+      }
+    };
+
     return (
-      <pre className="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg text-sm font-mono whitespace-pre-wrap h-full">
-        {content}
-      </pre>
+      <div className="h-full flex flex-col">
+        <div className="flex-1 border rounded-lg overflow-hidden">
+          <MonacoEditor
+            key={`text-editor-${tabKey}`}
+            height="100%"
+            defaultLanguage="plaintext"
+            language="plaintext"
+            value={content}
+            onMount={handleEditorDidMount}
+            options={{
+              readOnly: true,
+              minimap: { enabled: false },
+              fontSize: 14,
+              wordWrap: "on",
+              automaticLayout: true,
+              scrollBeyondLastLine: false,
+              folding: true,
+              lineNumbers: "on",
+              glyphMargin: false,
+              lineDecorationsWidth: 0,
+              lineNumbersMinChars: 3,
+              find: {
+                addExtraSpaceOnTop: false,
+                autoFindInSelection: "never",
+                seedSearchStringFromSelection: "selection"
+              }
+            }}
+            theme="vs-dark"
+          />
+        </div>
+      </div>
     );
   };
 
@@ -916,7 +999,7 @@ export default function ReportCheckerPage() {
       };
 
       setResult(result);
-      setActiveMainTab("input");
+      setActiveMainTab("manual_checker");
       setCurrentStage(null);
     } catch (error: any) {
       setError(error || "An error occurred during processing");
@@ -996,14 +1079,14 @@ export default function ReportCheckerPage() {
             <div className="flex justify-center absolute left-1/2 transform -translate-x-1/2">
               <div className="flex space-x-1 bg-gray-100 dark:bg-gray-700 p-1 rounded">
                 <button
-                  onClick={() => setActiveMainTabWithMemory("input")}
+                  onClick={() => setActiveMainTabWithMemory("manual_checker")}
                   className={`px-6 py-2.5 rounded font-medium text-sm transition-all duration-200 ${
-                    activeMainTab === "input"
+                    activeMainTab === "manual_checker"
                       ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
                       : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
                   }`}
                 >
-                  Input
+                  Tests Checker
                 </button>
                 {/* COMMENTED OUT - AGENTIC FUNCTIONALITY */}
                 {/*
@@ -1019,14 +1102,14 @@ export default function ReportCheckerPage() {
                 </button>
                 */}
                 <button
-                  onClick={() => setActiveMainTabWithMemory("manual_checker")}
+                  onClick={() => setActiveMainTabWithMemory("input")}
                   className={`px-6 py-2.5 rounded font-medium text-sm transition-all duration-200 ${
-                    activeMainTab === "manual_checker"
+                    activeMainTab === "input"
                       ? "bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-sm"
                       : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-600"
                   }`}
                 >
-                  Tests Checker
+                  Input
                 </button>
               </div>
             </div>
@@ -1124,11 +1207,11 @@ export default function ReportCheckerPage() {
                         <div className={`flex-1 min-h-0 ${
                           fileContents[activeTab]!.file_type === "json" && activeTab === "main_json"
                             ? "overflow-hidden" 
-                            : "overflow-auto"
+                            : "overflow-hidden"
                         }`}>
                           {fileContents[activeTab]!.file_type === "json" 
                             ? renderJsonContent(fileContents[activeTab]!.content, activeTab)
-                            : renderTextContent(fileContents[activeTab]!.content)
+                            : renderTextEditor(fileContents[activeTab]!.content, activeTab)
                           }
                         </div>
                       </>
