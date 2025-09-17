@@ -987,7 +987,7 @@ fn generate_analysis_result(
     let c1 = !c1_hits.is_empty();
     
     let c2_hits: Vec<String> = universe.iter()
-        .filter(|t| after_s.get(*t) == Some(&"failed".to_string()))
+        .filter(|t| after_s.get(*t) != Some(&"passed".to_string()))
         .cloned()
         .collect();
     let c2 = !c2_hits.is_empty();
@@ -999,7 +999,7 @@ fn generate_analysis_result(
     let c3 = !c3_hits.is_empty();
     
     let c4_hits: Vec<String> = pass_to_pass.iter()
-        .filter(|t| base_s.get(*t) == Some(&"missing".to_string()) && before_s.get(*t) == Some(&"failed".to_string()))
+        .filter(|t| base_s.get(*t) == Some(&"missing".to_string()) && before_s.get(*t) != Some(&"passed".to_string()))
         .cloned()
         .collect();
     let c4 = !c4_hits.is_empty();

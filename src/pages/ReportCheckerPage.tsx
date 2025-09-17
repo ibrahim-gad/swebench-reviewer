@@ -180,7 +180,7 @@ export default function ReportCheckerPage() {
       "c1_failed_in_base_present_in_P2P": "At least one failed test in base log is present in P2P",
       "c2_failed_in_after_present_in_F2P_or_P2P": "At least one failed test in after log is present in F2P / P2P",
       "c3_F2P_success_in_before": "At least one F2P test is present and successful in before log",
-      "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is failing in before",
+      "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is found but failing in before or is missing from base and before",
       "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)"
     };
     
