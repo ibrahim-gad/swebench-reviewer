@@ -54,6 +54,12 @@ lazy_static! {
 
     static ref FAILURES_BLOCK_RE: Regex = Regex::new(r"^\s{4}(.+?)\s*$")
         .expect("Failed to compile FAILURES_BLOCK_RE regex");
+
+    // Additional patterns for single-line parsing to avoid repeated compilation
+    static ref SINGLE_LINE_START_RE: Regex = Regex::new(r"(?i)test\s+([^\s.]+(?:::[^\s.]+)*)\s*\.{2,}").unwrap();
+    static ref SINGLE_LINE_NEXT_TEST_RE: Regex = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}").unwrap();
+    static ref SINGLE_LINE_STATUS_AT_START_RE: Regex = Regex::new(r"(?i)^(ok|FAILED|ignored|error)").unwrap();
+    static ref SIMPLE_PATTERN_RE: Regex = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
 }
 
 #[derive(Serialize, Deserialize)]
@@ -796,15 +802,13 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
     }
 
     // harder cases: "test name ... <debug> STATUS" before next test
-    let start_re = Regex::new(r"(?i)test\s+([^\s.]+(?:::[^\s.]+)*)\s*\.{2,}").unwrap();
-    let next_test_re = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}").unwrap();
-    for cap in start_re.captures_iter(&clean) {
+    for cap in SINGLE_LINE_START_RE.captures_iter(&clean) {
         let name = cap.get(1).unwrap().as_str().to_string();
         if passed.contains(&name) || failed.contains(&name) || ignored.contains(&name) {
             continue;
         }
         let search_pos = cap.get(0).unwrap().end();
-        let end_pos = if let Some(ncap) = next_test_re.find_at(&clean, search_pos) {
+        let end_pos = if let Some(ncap) = SINGLE_LINE_NEXT_TEST_RE.find_at(&clean, search_pos) {
             ncap.start()
         } else {
             std::cmp::min(search_pos + 1000, clean.len())
@@ -840,9 +844,8 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
         }
         
         // Also look for status at the beginning of lines mixed with logging
-        let status_at_start_re = Regex::new(r"(?i)^(ok|FAILED|ignored|error)").unwrap();
         for line in window.lines() {
-            if let Some(cap) = status_at_start_re.captures(line) {
+            if let Some(cap) = SINGLE_LINE_STATUS_AT_START_RE.captures(line) {
                 let status = cap.get(1).unwrap().as_str().to_lowercase();
                 let line_lower = line.to_lowercase();
                 
@@ -886,11 +889,70 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
     ParsedLog { passed, failed, ignored, all }
 }
 
+// Helper function to check if an error status is part of diagnostic messages
+fn is_diagnostic_error(status: &str, line: &str) -> bool {
+    if status != "error" {
+        return false;
+    }
+    
+    let line_lower = line.to_lowercase();
+    line_lower.contains("error:") || 
+    line_lower.contains("panic") ||
+    line_lower.contains("custom") ||
+    line_lower.contains("called `result::unwrap()") ||
+    line_lower.contains("thread") ||
+    line_lower.contains("kind:")
+}
+
+// Helper function to check if status appears in the middle of diagnostic messages
+fn is_status_in_diagnostic_context(status: &str, line: &str) -> bool {
+    let line_lower = line.to_lowercase();
+    if let Some(pos) = line_lower.find(status) {
+        let before_status = &line_lower[..pos];
+        let after_status = &line_lower[pos + status.len()..];
+        
+        before_status.contains("error:") || 
+        before_status.contains("panic") ||
+        after_status.contains("value:") ||
+        after_status.contains("kind:")
+    } else {
+        false
+    }
+}
+
+// Helper function to check for panic evidence for a specific test
+fn has_panic_evidence(test_name: &str, lines: &[&str], search_start: usize, search_end: usize) -> bool {
+    let search_range = &lines[search_start..search_end];
+    search_range.iter().any(|search_line| {
+        let search_lower = search_line.to_lowercase();
+        search_lower.contains(&format!("thread '{}'", test_name)) && 
+        search_lower.contains("panicked at")
+    })
+}
+
+// Helper function to process status and update test collections
+fn process_test_status(
+    status: &str,
+    test_name: &str,
+    passed: &mut std::collections::HashSet<String>,
+    failed: &mut std::collections::HashSet<String>,
+    ignored: &mut std::collections::HashSet<String>,
+    freq: &mut std::collections::HashMap<String, i32>
+) {
+    *freq.entry(test_name.to_string()).or_insert(0) += 1;
+    
+    match status {
+        "ok" => { passed.insert(test_name.to_string()); }
+        "failed" | "error" => { failed.insert(test_name.to_string()); }
+        "ignored" => { ignored.insert(test_name.to_string()); }
+        _ => {}
+    }
+}
+
 fn looks_single_line_like(text: &str) -> bool {
     let line_count = text.lines().count();
     let has_ansi = ANSI_RE.is_match(text);
-    let simple_pat = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
-    let test_count = simple_pat.find_iter(text).count();
+    let test_count = SIMPLE_PATTERN_RE.find_iter(text).count();
     (line_count <= 3 && test_count > 5) || has_ansi
 }
 
@@ -998,34 +1060,18 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                 let status = captures.get(1).unwrap().as_str().to_lowercase();
                 
                 // Enhanced filtering to avoid false positives from diagnostic messages
-                let line_lower = line.to_lowercase();
-                if status == "error" && (
-                    line_lower.contains("error:") || 
-                    line_lower.contains("panic") ||
-                    line_lower.contains("custom") ||
-                    line_lower.contains("called `result::unwrap()") ||
-                    line_lower.contains("thread") ||
-                    line_lower.contains("kind:")
-                ) {
+                if is_diagnostic_error(&status, line) {
                     continue;
                 }
                 
                 // Also skip if the status word appears in the middle of a diagnostic message
-                if let Some(pos) = line_lower.find(&status) {
-                    let before_status = &line_lower[..pos];
-                    let after_status = &line_lower[pos + status.len()..];
-                    
-                    // Skip if it's clearly part of a diagnostic message
-                    if before_status.contains("error:") || 
-                       before_status.contains("panic") ||
-                       after_status.contains("value:") ||
-                       after_status.contains("kind:") {
-                        continue;
-                    }
+                if is_status_in_diagnostic_context(&status, line) {
+                    continue;
                 }
 
                 // Special handling for status mixed with logging output
                 // Skip if the status appears mixed with logging output UNLESS there's evidence of a panic for this test
+                let line_lower = line.to_lowercase();
                 if (status == "failed" || status == "error") && 
                    (line_lower.contains("logging at") || 
                     line_lower.contains("debug:") || 
@@ -1034,31 +1080,16 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                     line_lower.contains("warn:")) {
                     
                     // Check if there's a panic message for this specific test in a broader range
-                    // Look both before and after the test start  
                     let search_start = start_line.saturating_sub(100);
                     let search_end = std::cmp::min(j + 1, lines.len());
-                    let expanded_range = &lines[search_start..search_end];
                     
-                    let panic_for_this_test = expanded_range.iter().any(|search_line| {
-                        let search_lower = search_line.to_lowercase();
-                        search_lower.contains(&format!("thread '{}'", test_name)) && 
-                        search_lower.contains("panicked at")
-                    });
-                    
-                    if !panic_for_this_test {
+                    if !has_panic_evidence(&test_name, &lines, search_start, search_end) {
                         // This status is mixed with logging output and no panic evidence, skip it
                         continue;
                     }
                 }
                 
-                *freq.entry(test_name.clone()).or_insert(0) += 1;
-
-                match status.as_str() {
-                    "ok" => { passed.insert(test_name.clone()); }
-                    "failed" | "error" => { failed.insert(test_name.clone()); }
-                    "ignored" => { ignored.insert(test_name.clone()); }
-                    _ => {}
-                }
+                process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
                 found = true;
                 break;
             }
@@ -1080,13 +1111,7 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                     || stripped.eq_ignore_ascii_case("error")
                 {
                     let status = stripped.to_lowercase();
-                    *freq.entry(test_name.clone()).or_insert(0) += 1;
-                    match status.as_str() {
-                        "ok" => { passed.insert(test_name.clone()); }
-                        "failed" | "error" => { failed.insert(test_name.clone()); }
-                        "ignored" => { ignored.insert(test_name.clone()); }
-                        _ => {}
-                    }
+                    process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
                     break;
                 }
 
@@ -1102,34 +1127,18 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                     let status = captures.get(1).unwrap().as_str().to_lowercase();
                     
                     // Enhanced filtering to avoid false positives from diagnostic messages
-                    let line_lower = line.to_lowercase();
-                    if status == "error" && (
-                        line_lower.contains("error:") || 
-                        line_lower.contains("panic") ||
-                        line_lower.contains("custom") ||
-                        line_lower.contains("called `result::unwrap()") ||
-                        line_lower.contains("thread") ||
-                        line_lower.contains("kind:")
-                    ) {
+                    if is_diagnostic_error(&status, line) {
                         continue;
                     }
                     
                     // Also skip if the status word appears in the middle of a diagnostic message
-                    if let Some(pos) = line_lower.find(&status) {
-                        let before_status = &line_lower[..pos];
-                        let after_status = &line_lower[pos + status.len()..];
-                        
-                        // Skip if it's clearly part of a diagnostic message
-                        if before_status.contains("error:") || 
-                           before_status.contains("panic") ||
-                           after_status.contains("value:") ||
-                           after_status.contains("kind:") {
-                            continue;
-                        }
+                    if is_status_in_diagnostic_context(&status, line) {
+                        continue;
                     }
 
                     // Special handling for status mixed with logging output
                     // Skip if the status appears mixed with logging output UNLESS there's evidence of a panic for this test
+                    let line_lower = line.to_lowercase();
                     if (status == "failed" || status == "error") && 
                        (line_lower.contains("logging at") || 
                         line_lower.contains("debug:") || 
@@ -1140,27 +1149,14 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                         // Check if there's a panic message for this specific test in a broader range
                         let search_start = start_line.saturating_sub(100);
                         let search_end = std::cmp::min(j + 1, lines.len());
-                        let expanded_range = &lines[search_start..search_end];
                         
-                        let panic_for_this_test = expanded_range.iter().any(|search_line| {
-                            let search_lower = search_line.to_lowercase();
-                            search_lower.contains(&format!("thread '{}'", test_name)) && 
-                            search_lower.contains("panicked at")
-                        });
-                        
-                        if !panic_for_this_test {
+                        if !has_panic_evidence(&test_name, &lines, search_start, search_end) {
                             // This status is mixed with logging output and no panic evidence, skip it
                             continue;
                         }
                     }
                     
-                    *freq.entry(test_name.clone()).or_insert(0) += 1;
-                    match status.as_str() {
-                        "ok" => { passed.insert(test_name.clone()); }
-                        "failed" | "error" => { failed.insert(test_name.clone()); }
-                        "ignored" => { ignored.insert(test_name.clone()); }
-                        _ => {}
-                    }
+                    process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
                     break;
                 }
 
@@ -1254,14 +1250,7 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
         
         // Use the last (most recent) valid status match
         if let Some((status, _)) = status_matches.last() {
-            *freq.entry(test_name.clone()).or_insert(0) += 1;
-            
-            match status.as_str() {
-                "ok" => { passed.insert(test_name); }
-                "failed" | "error" => { failed.insert(test_name); }
-                "ignored" => { ignored.insert(test_name); }
-                _ => {}
-            }
+            process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
         }
     }
     
@@ -1460,7 +1449,7 @@ fn generate_analysis_result(
     let c3 = !c3_hits.is_empty();
     
     // C4: Report *violations* of the valid P2P pattern:
-    //  base: missing AND (before: failed ORreqaetr missing) AND after: passed
+    //  base: missing AND (before: failed OR missing) AND after: passed
     // We mark problem when test violates the above (meets first part(s) but fails after, or passes in before).
     let mut c4_hits: Vec<String> = vec![];
     for t in pass_to_pass {
