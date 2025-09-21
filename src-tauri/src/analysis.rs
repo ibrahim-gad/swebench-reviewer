@@ -20,6 +20,10 @@ lazy_static! {
     static ref STATUS_AT_END_RE: Regex = Regex::new(r"(?i)\b(ok|failed|ignored|error)\s*$")
         .expect("Failed to compile STATUS_AT_END_RE regex");
 
+    // New pattern to match status at the beginning of lines mixed with logging output
+    static ref STATUS_AT_START_RE: Regex = Regex::new(r"(?i)^(ok|FAILED|ignored|error)")
+        .expect("Failed to compile STATUS_AT_START_RE regex");
+
     static ref ANOTHER_TEST_RE: Regex = Regex::new(r"(?i)\btest\s+[\w:]+\s+\.\.\.\s*")
         .expect("Failed to compile ANOTHER_TEST_RE regex");
 
@@ -807,9 +811,10 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
         };
         let window = &clean[search_pos..end_pos];
 
-        // prefer a status near the end of window and not obviously part of diagnostics
-        // Find all status matches and pick the most appropriate one
+        // Find all status matches including beginning-of-line patterns and pick the most appropriate one
         let mut status_matches = Vec::new();
+        
+        // Look for status at end of lines within window
         for m in STATUS_IN_TEXT_RE.find_iter(window) {
             let status = m.as_str().to_lowercase();
             let match_start = m.start();
@@ -832,6 +837,34 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
             }
             
             status_matches.push((status, match_start));
+        }
+        
+        // Also look for status at the beginning of lines mixed with logging
+        let status_at_start_re = Regex::new(r"(?i)^(ok|FAILED|ignored|error)").unwrap();
+        for line in window.lines() {
+            if let Some(cap) = status_at_start_re.captures(line) {
+                let status = cap.get(1).unwrap().as_str().to_lowercase();
+                let line_lower = line.to_lowercase();
+                
+                // Special handling for status mixed with logging output
+                if (status == "failed" || status == "error") && 
+                   (line_lower.contains("logging at") || 
+                    line_lower.contains("debug:") || 
+                    line_lower.contains("trace:") || 
+                    line_lower.contains("info:") || 
+                    line_lower.contains("warn:")) {
+                    
+                    // Check for panic evidence for this test in the window
+                    let panic_for_this_test = window.to_lowercase().contains(&format!("thread '{}'", name)) && 
+                                            window.to_lowercase().contains("panicked at");
+                    
+                    if panic_for_this_test {
+                        status_matches.push((status, 0)); // Use 0 as position indicator for start-of-line matches
+                    }
+                } else {
+                    status_matches.push((status, 0));
+                }
+            }
         }
         
         // Use the last (most recent) valid status match
@@ -953,8 +986,15 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                 break;
             }
 
-            // Check for status words at the end of lines (after debug output)
+            // Check for status words at the end of lines (after debug output) OR at the beginning mixed with logging
+            let mut status_match = None;
             if let Some(captures) = STATUS_AT_END_RE.captures(line) {
+                status_match = Some(captures);
+            } else if let Some(captures) = STATUS_AT_START_RE.captures(line) {
+                status_match = Some(captures);
+            }
+
+            if let Some(captures) = status_match {
                 let status = captures.get(1).unwrap().as_str().to_lowercase();
                 
                 // Enhanced filtering to avoid false positives from diagnostic messages
@@ -980,6 +1020,33 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                        before_status.contains("panic") ||
                        after_status.contains("value:") ||
                        after_status.contains("kind:") {
+                        continue;
+                    }
+                }
+
+                // Special handling for status mixed with logging output
+                // Skip if the status appears mixed with logging output UNLESS there's evidence of a panic for this test
+                if (status == "failed" || status == "error") && 
+                   (line_lower.contains("logging at") || 
+                    line_lower.contains("debug:") || 
+                    line_lower.contains("trace:") || 
+                    line_lower.contains("info:") || 
+                    line_lower.contains("warn:")) {
+                    
+                    // Check if there's a panic message for this specific test in a broader range
+                    // Look both before and after the test start  
+                    let search_start = start_line.saturating_sub(100);
+                    let search_end = std::cmp::min(j + 1, lines.len());
+                    let expanded_range = &lines[search_start..search_end];
+                    
+                    let panic_for_this_test = expanded_range.iter().any(|search_line| {
+                        let search_lower = search_line.to_lowercase();
+                        search_lower.contains(&format!("thread '{}'", test_name)) && 
+                        search_lower.contains("panicked at")
+                    });
+                    
+                    if !panic_for_this_test {
+                        // This status is mixed with logging output and no panic evidence, skip it
                         continue;
                     }
                 }
@@ -1023,7 +1090,15 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                     break;
                 }
 
+                // Check for status words at the end of lines (after debug output) OR at the beginning mixed with logging
+                let mut status_match = None;
                 if let Some(captures) = STATUS_AT_END_RE.captures(line) {
+                    status_match = Some(captures);
+                } else if let Some(captures) = STATUS_AT_START_RE.captures(line) {
+                    status_match = Some(captures);
+                }
+
+                if let Some(captures) = status_match {
                     let status = captures.get(1).unwrap().as_str().to_lowercase();
                     
                     // Enhanced filtering to avoid false positives from diagnostic messages
@@ -1049,6 +1124,32 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                            before_status.contains("panic") ||
                            after_status.contains("value:") ||
                            after_status.contains("kind:") {
+                            continue;
+                        }
+                    }
+
+                    // Special handling for status mixed with logging output
+                    // Skip if the status appears mixed with logging output UNLESS there's evidence of a panic for this test
+                    if (status == "failed" || status == "error") && 
+                       (line_lower.contains("logging at") || 
+                        line_lower.contains("debug:") || 
+                        line_lower.contains("trace:") || 
+                        line_lower.contains("info:") || 
+                        line_lower.contains("warn:")) {
+                        
+                        // Check if there's a panic message for this specific test in a broader range
+                        let search_start = start_line.saturating_sub(100);
+                        let search_end = std::cmp::min(j + 1, lines.len());
+                        let expanded_range = &lines[search_start..search_end];
+                        
+                        let panic_for_this_test = expanded_range.iter().any(|search_line| {
+                            let search_lower = search_line.to_lowercase();
+                            search_lower.contains(&format!("thread '{}'", test_name)) && 
+                            search_lower.contains("panicked at")
+                        });
+                        
+                        if !panic_for_this_test {
+                            // This status is mixed with logging output and no panic evidence, skip it
                             continue;
                         }
                     }
