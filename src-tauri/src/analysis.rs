@@ -32,7 +32,7 @@ lazy_static! {
     static ref STATUS_IN_TEXT_RE: Regex = Regex::new(r"(?i)\b(ok|failed|ignored|error)\b")
         .expect("Failed to compile STATUS_IN_TEXT_RE regex");
 
-    // Additional Python-parity patterns
+    // Additional patterns
     static ref CORRUPTED_TEST_LINE_RE: Regex = Regex::new(r"(?i)(?:line)?test\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*")
         .expect("Failed to compile CORRUPTED_TEST_LINE_RE regex");
 
@@ -1204,7 +1204,7 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
     })
 }
 
-// ---------------- Duplicate detection (C5) parity with Python ----------------
+// ---------------- Duplicate detection (C5) parity----------------
 fn detect_file_boundary(line: &str) -> Option<String> {
     if let Some(c) = FILE_BOUNDARY_RE_1.captures(line) {
         return Some(c.get(1).unwrap().as_str().to_string());
@@ -1338,7 +1338,7 @@ fn generate_analysis_result(
     let before_s = status_lookup(&universe, before_parsed);
     let after_s = status_lookup(&universe, after_parsed);
     
-    // ---------------- Rule checks parity with Python ----------------
+    // ---------------- Rule checks parity ----------------
     let c1_hits: Vec<String> = pass_to_pass.iter()
         .filter(|t| base_s.get(*t) == Some(&"failed".to_string()))
         .cloned()
@@ -1359,7 +1359,6 @@ fn generate_analysis_result(
     let c3 = !c3_hits.is_empty();
     
     // C4: Report *violations* of the valid P2P pattern:
-    // Valid pattern in Python:
     //  base: missing AND (before: failed ORreqaetr missing) AND after: passed
     // We mark problem when test violates the above (meets first part(s) but fails after, or passes in before).
     let mut c4_hits: Vec<String> = vec![];
