@@ -48,6 +48,11 @@ lazy_static! {
     // Enhanced extraction patterns
     static ref ENH_TEST_RE_1: Regex = Regex::new(r"(?i)\btest\s+([^\s.]+(?:::[^\s.]+)*)\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
     static ref ENH_TEST_RE_2: Regex = Regex::new(r"(?i)test\s+([a-zA-Z_][a-zA-Z0-9_:]*)\s+\.\.\.\s+(ok|FAILED|ignored|error)").unwrap();
+    
+    // Nextest format patterns - handles "PASS [duration] test_name" and "FAIL [duration] test_name"
+    static ref NEXTEST_PASS_RE: Regex = Regex::new(r"(?i)^\s*PASS\s+\[[^\]]+\]\s+(.+)$").unwrap();
+    static ref NEXTEST_FAIL_RE: Regex = Regex::new(r"(?i)^\s*FAIL\s+\[[^\]]+\]\s+(.+)$").unwrap();
+    static ref NEXTEST_SKIP_RE: Regex = Regex::new(r"(?i)^\s*(SKIP|IGNORED)\s+\[[^\]]+\]\s+(.+)$").unwrap();
 
     // ANSI escape detection
     static ref ANSI_RE: Regex = Regex::new(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])").unwrap();
@@ -956,9 +961,73 @@ fn looks_single_line_like(text: &str) -> bool {
     (line_count <= 3 && test_count > 5) || has_ansi
 }
 
+fn looks_nextest_format(text: &str) -> bool {
+    // Check for nextest-specific patterns
+    let nextest_indicators = [
+        "Nextest run ID",
+        "nextest run",
+        "Starting tests across",
+        "PASS [",
+        "FAIL [",
+    ];
+    
+    let has_indicators = nextest_indicators.iter().any(|indicator| 
+        text.to_lowercase().contains(&indicator.to_lowercase())
+    );
+    
+    // Count nextest-style result lines
+    let nextest_lines = NEXTEST_PASS_RE.find_iter(text).count() + 
+                       NEXTEST_FAIL_RE.find_iter(text).count() + 
+                       NEXTEST_SKIP_RE.find_iter(text).count();
+    
+    has_indicators || nextest_lines > 5
+}
+
+fn parse_nextest_log(text: &str) -> ParsedLog {
+    let mut passed = std::collections::HashSet::new();
+    let mut failed = std::collections::HashSet::new();
+    let mut ignored = std::collections::HashSet::new();
+
+    // Parse nextest format using separate regex patterns for better accuracy
+    for line in text.lines() {
+        // Parse PASS lines
+        if let Some(captures) = NEXTEST_PASS_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().trim().to_string();
+            passed.insert(test_name);
+            continue;
+        }
+        
+        // Parse FAIL lines
+        if let Some(captures) = NEXTEST_FAIL_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().trim().to_string();
+            failed.insert(test_name);
+            continue;
+        }
+        
+        // Parse SKIP/IGNORED lines
+        if let Some(captures) = NEXTEST_SKIP_RE.captures(line) {
+            let test_name = captures.get(2).unwrap().as_str().trim().to_string();
+            ignored.insert(test_name);
+            continue;
+        }
+    }
+
+    let mut all = std::collections::HashSet::new();
+    all.extend(passed.iter().cloned());
+    all.extend(failed.iter().cloned());
+    all.extend(ignored.iter().cloned());
+
+    ParsedLog { passed, failed, ignored, all }
+}
+
 fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
     let content = fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read log file {}: {}", file_path, e))?;
+
+    // Check for nextest format first
+    if looks_nextest_format(&content) {
+        return Ok(parse_nextest_log(&content));
+    }
 
     // Switch to ANSI/single-line parser when appropriate
     if looks_single_line_like(&content) {
