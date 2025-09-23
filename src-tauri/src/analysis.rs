@@ -3,35 +3,68 @@ use std::fs;
 use crate::settings::load_setting;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::cmp::min;
 
 // Compile regex patterns once at module level to avoid repeated compilation
 lazy_static! {
-    static ref TEST_LINE_RE: Regex = Regex::new(r"\btest\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored)")
+    // Case-insensitive, include error status, allow trailing whitespace
+    static ref TEST_LINE_RE: Regex = Regex::new(r"(?i)\btest\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored|error)\s*$")
         .expect("Failed to compile TEST_LINE_RE regex");
-    
-    static ref TEST_START_RE: Regex = Regex::new(r"\btest\s+(.+?)\s+\.\.\.\s*(.*?)$")
+
+    static ref TEST_START_RE: Regex = Regex::new(r"(?i)\btest\s+(.+?)\s+\.\.\.\s*(.*?)$")
         .expect("Failed to compile TEST_START_RE regex");
-    
-    static ref STATUS_RE: Regex = Regex::new(r"\b(ok|failed|ignored)\b")
+
+    static ref STATUS_RE: Regex = Regex::new(r"(?i)\b(ok|failed|ignored|error)\b")
         .expect("Failed to compile STATUS_RE regex");
-    
-    static ref STATUS_AT_END_RE: Regex = Regex::new(r"\b(ok|failed|ignored)\s*$")
+
+    static ref STATUS_AT_END_RE: Regex = Regex::new(r"(?i)\b(ok|failed|ignored|error)\s*$")
         .expect("Failed to compile STATUS_AT_END_RE regex");
-    
-    static ref ANOTHER_TEST_RE: Regex = Regex::new(r"\btest\s+[\w:]+\s+\.\.\.\s*")
+
+    // New pattern to match status at the beginning of lines mixed with logging output
+    static ref STATUS_AT_START_RE: Regex = Regex::new(r"(?i)^(ok|FAILED|ignored|error)")
+        .expect("Failed to compile STATUS_AT_START_RE regex");
+
+    static ref ANOTHER_TEST_RE: Regex = Regex::new(r"(?i)\btest\s+[\w:]+\s+\.\.\.\s*")
         .expect("Failed to compile ANOTHER_TEST_RE regex");
-    
-    static ref TEST_WITH_O_RE: Regex = Regex::new(r"\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*o\s*$")
+
+    static ref TEST_WITH_O_RE: Regex = Regex::new(r"(?i)\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*o\s*$")
         .expect("Failed to compile TEST_WITH_O_RE regex");
-    
-    static ref TEST_STARTS_RE: Regex = Regex::new(r"\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*")
+
+    static ref TEST_STARTS_RE: Regex = Regex::new(r"(?i)\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*")
         .expect("Failed to compile TEST_STARTS_RE regex");
-    
-    static ref STATUS_IN_TEXT_RE: Regex = Regex::new(r"\b(ok|failed|ignored)\b")
+
+    static ref STATUS_IN_TEXT_RE: Regex = Regex::new(r"(?i)\b(ok|failed|ignored|error)\b")
         .expect("Failed to compile STATUS_IN_TEXT_RE regex");
+
+    // Additional patterns
+    static ref CORRUPTED_TEST_LINE_RE: Regex = Regex::new(r"(?i)(?:line)?test\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*")
+        .expect("Failed to compile CORRUPTED_TEST_LINE_RE regex");
+
+    // File boundary hints
+    static ref FILE_BOUNDARY_RE_1: Regex = Regex::new(r"(?i)Running\s+([^/\s]+(?:/[^/\s]+)*\.rs)\s*\(").unwrap();
+    static ref FILE_BOUNDARY_RE_2: Regex = Regex::new(r"(?i)===\s*Running\s+(.+\.rs)").unwrap();
+    static ref FILE_BOUNDARY_RE_3: Regex = Regex::new(r"(?i)test\s+result:\s+ok\.\s+\d+\s+passed.*for\s+(.+\.rs)").unwrap();
+
+    // Enhanced extraction patterns
+    static ref ENH_TEST_RE_1: Regex = Regex::new(r"(?i)\btest\s+([^\s.]+(?:::[^\s.]+)*)\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
+    static ref ENH_TEST_RE_2: Regex = Regex::new(r"(?i)test\s+([a-zA-Z_][a-zA-Z0-9_:]*)\s+\.\.\.\s+(ok|FAILED|ignored|error)").unwrap();
     
+    // Nextest format patterns - handles "PASS [duration] test_name" and "FAIL [duration] test_name"
+    static ref NEXTEST_PASS_RE: Regex = Regex::new(r"(?i)^\s*PASS\s+\[[^\]]+\]\s+(.+)$").unwrap();
+    static ref NEXTEST_FAIL_RE: Regex = Regex::new(r"(?i)^\s*FAIL\s+\[[^\]]+\]\s+(.+)$").unwrap();
+    static ref NEXTEST_SKIP_RE: Regex = Regex::new(r"(?i)^\s*(SKIP|IGNORED)\s+\[[^\]]+\]\s+(.+)$").unwrap();
+
+    // ANSI escape detection
+    static ref ANSI_RE: Regex = Regex::new(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])").unwrap();
+
     static ref FAILURES_BLOCK_RE: Regex = Regex::new(r"^\s{4}(.+?)\s*$")
         .expect("Failed to compile FAILURES_BLOCK_RE regex");
+
+    // Additional patterns for single-line parsing to avoid repeated compilation
+    static ref SINGLE_LINE_START_RE: Regex = Regex::new(r"(?i)test\s+([^\s.]+(?:::[^\s.]+)*)\s*\.{2,}").unwrap();
+    static ref SINGLE_LINE_NEXT_TEST_RE: Regex = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}").unwrap();
+    static ref SINGLE_LINE_STATUS_AT_START_RE: Regex = Regex::new(r"(?i)^(ok|FAILED|ignored|error)").unwrap();
+    static ref SIMPLE_PATTERN_RE: Regex = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
 }
 
 #[derive(Serialize, Deserialize)]
@@ -746,10 +779,261 @@ struct ParsedLog {
     all: std::collections::HashSet<String>,
 }
 
+// ---------------- Single-line (ANSI) aware parsing ----------------
+fn strip_ansi_color_codes(s: &str) -> String {
+    ANSI_RE.replace_all(s, "").into_owned()
+}
+
+fn parse_rust_log_single_line(text: &str) -> ParsedLog {
+    let mut passed = std::collections::HashSet::new();
+    let mut failed = std::collections::HashSet::new();
+    let mut ignored = std::collections::HashSet::new();
+
+    let clean = strip_ansi_color_codes(text);
+
+    // fast path: straightforward "test name ... STATUS"
+    for cap in ENH_TEST_RE_1.captures_iter(&clean) {
+        let name = cap.get(1).unwrap().as_str().to_string();
+        let mut status = cap.get(2).unwrap().as_str().to_lowercase();
+        if status == "failed" || status == "error" {
+            status = "failed".to_string();
+        }
+        match status.as_str() {
+            "ok" => { passed.insert(name); }
+            "failed" => { failed.insert(name); }
+            "ignored" => { ignored.insert(name); }
+            _ => {}
+        }
+    }
+
+    // harder cases: "test name ... <debug> STATUS" before next test
+    for cap in SINGLE_LINE_START_RE.captures_iter(&clean) {
+        let name = cap.get(1).unwrap().as_str().to_string();
+        if passed.contains(&name) || failed.contains(&name) || ignored.contains(&name) {
+            continue;
+        }
+        let search_pos = cap.get(0).unwrap().end();
+        let end_pos = if let Some(ncap) = SINGLE_LINE_NEXT_TEST_RE.find_at(&clean, search_pos) {
+            ncap.start()
+        } else {
+            std::cmp::min(search_pos + 1000, clean.len())
+        };
+        let window = &clean[search_pos..end_pos];
+
+        // Find all status matches including beginning-of-line patterns and pick the most appropriate one
+        let mut status_matches = Vec::new();
+        
+        // Look for status at end of lines within window
+        for m in STATUS_IN_TEXT_RE.find_iter(window) {
+            let status = m.as_str().to_lowercase();
+            let match_start = m.start();
+            
+            // Get context around the match
+            let context_start = match_start.saturating_sub(50);
+            let context_end = std::cmp::min(match_start + 50, window.len());
+            let context = &window[context_start..context_end].to_lowercase();
+            
+            // Enhanced filtering to avoid false positives
+            if status == "error" && (
+                context.contains("error:") || 
+                context.contains("panic") ||
+                context.contains("custom") ||
+                context.contains("called `result::unwrap()") ||
+                context.contains("thread") ||
+                context.contains("kind:")
+            ) {
+                continue;
+            }
+            
+            status_matches.push((status, match_start));
+        }
+        
+        // Also look for status at the beginning of lines mixed with logging
+        for line in window.lines() {
+            if let Some(cap) = SINGLE_LINE_STATUS_AT_START_RE.captures(line) {
+                let status = cap.get(1).unwrap().as_str().to_lowercase();
+                let line_lower = line.to_lowercase();
+                
+                // Special handling for status mixed with logging output
+                if (status == "failed" || status == "error") && 
+                   (line_lower.contains("logging at") || 
+                    line_lower.contains("debug:") || 
+                    line_lower.contains("trace:") || 
+                    line_lower.contains("info:") || 
+                    line_lower.contains("warn:")) {
+                    
+                    // Check for panic evidence for this test in the window
+                    let panic_for_this_test = window.to_lowercase().contains(&format!("thread '{}'", name)) && 
+                                            window.to_lowercase().contains("panicked at");
+                    
+                    if panic_for_this_test {
+                        status_matches.push((status, 0)); // Use 0 as position indicator for start-of-line matches
+                    }
+                } else {
+                    status_matches.push((status, 0));
+                }
+            }
+        }
+        
+        // Use the last (most recent) valid status match
+        if let Some((status, _)) = status_matches.last() {
+            match status.as_str() {
+                "ok" => { passed.insert(name); }
+                "failed" | "error" => { failed.insert(name); }
+                "ignored" => { ignored.insert(name); }
+                _ => {}
+            }
+        }
+    }
+
+    let mut all = std::collections::HashSet::new();
+    all.extend(passed.iter().cloned());
+    all.extend(failed.iter().cloned());
+    all.extend(ignored.iter().cloned());
+
+    ParsedLog { passed, failed, ignored, all }
+}
+
+// Helper function to check if an error status is part of diagnostic messages
+fn is_diagnostic_error(status: &str, line: &str) -> bool {
+    if status != "error" {
+        return false;
+    }
+    
+    let line_lower = line.to_lowercase();
+    line_lower.contains("error:") || 
+    line_lower.contains("panic") ||
+    line_lower.contains("custom") ||
+    line_lower.contains("called `result::unwrap()") ||
+    line_lower.contains("thread") ||
+    line_lower.contains("kind:")
+}
+
+// Helper function to check if status appears in the middle of diagnostic messages
+fn is_status_in_diagnostic_context(status: &str, line: &str) -> bool {
+    let line_lower = line.to_lowercase();
+    if let Some(pos) = line_lower.find(status) {
+        let before_status = &line_lower[..pos];
+        let after_status = &line_lower[pos + status.len()..];
+        
+        before_status.contains("error:") || 
+        before_status.contains("panic") ||
+        after_status.contains("value:") ||
+        after_status.contains("kind:")
+    } else {
+        false
+    }
+}
+
+// Helper function to check for panic evidence for a specific test
+fn has_panic_evidence(test_name: &str, lines: &[&str], search_start: usize, search_end: usize) -> bool {
+    let search_range = &lines[search_start..search_end];
+    search_range.iter().any(|search_line| {
+        let search_lower = search_line.to_lowercase();
+        search_lower.contains(&format!("thread '{}'", test_name)) && 
+        search_lower.contains("panicked at")
+    })
+}
+
+// Helper function to process status and update test collections
+fn process_test_status(
+    status: &str,
+    test_name: &str,
+    passed: &mut std::collections::HashSet<String>,
+    failed: &mut std::collections::HashSet<String>,
+    ignored: &mut std::collections::HashSet<String>,
+    freq: &mut std::collections::HashMap<String, i32>
+) {
+    *freq.entry(test_name.to_string()).or_insert(0) += 1;
+    
+    match status {
+        "ok" => { passed.insert(test_name.to_string()); }
+        "failed" | "error" => { failed.insert(test_name.to_string()); }
+        "ignored" => { ignored.insert(test_name.to_string()); }
+        _ => {}
+    }
+}
+
+fn looks_single_line_like(text: &str) -> bool {
+    let line_count = text.lines().count();
+    let has_ansi = ANSI_RE.is_match(text);
+    let test_count = SIMPLE_PATTERN_RE.find_iter(text).count();
+    (line_count <= 3 && test_count > 5) || has_ansi
+}
+
+fn looks_nextest_format(text: &str) -> bool {
+    // Check for nextest-specific patterns
+    let nextest_indicators = [
+        "Nextest run ID",
+        "nextest run",
+        "Starting tests across",
+        "PASS [",
+        "FAIL [",
+    ];
+    
+    let has_indicators = nextest_indicators.iter().any(|indicator| 
+        text.to_lowercase().contains(&indicator.to_lowercase())
+    );
+    
+    // Count nextest-style result lines
+    let nextest_lines = NEXTEST_PASS_RE.find_iter(text).count() + 
+                       NEXTEST_FAIL_RE.find_iter(text).count() + 
+                       NEXTEST_SKIP_RE.find_iter(text).count();
+    
+    has_indicators || nextest_lines > 5
+}
+
+fn parse_nextest_log(text: &str) -> ParsedLog {
+    let mut passed = std::collections::HashSet::new();
+    let mut failed = std::collections::HashSet::new();
+    let mut ignored = std::collections::HashSet::new();
+
+    // Parse nextest format using separate regex patterns for better accuracy
+    for line in text.lines() {
+        // Parse PASS lines
+        if let Some(captures) = NEXTEST_PASS_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().trim().to_string();
+            passed.insert(test_name);
+            continue;
+        }
+        
+        // Parse FAIL lines
+        if let Some(captures) = NEXTEST_FAIL_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().trim().to_string();
+            failed.insert(test_name);
+            continue;
+        }
+        
+        // Parse SKIP/IGNORED lines
+        if let Some(captures) = NEXTEST_SKIP_RE.captures(line) {
+            let test_name = captures.get(2).unwrap().as_str().trim().to_string();
+            ignored.insert(test_name);
+            continue;
+        }
+    }
+
+    let mut all = std::collections::HashSet::new();
+    all.extend(passed.iter().cloned());
+    all.extend(failed.iter().cloned());
+    all.extend(ignored.iter().cloned());
+
+    ParsedLog { passed, failed, ignored, all }
+}
+
 fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
     let content = fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read log file {}: {}", file_path, e))?;
-    
+
+    // Check for nextest format first
+    if looks_nextest_format(&content) {
+        return Ok(parse_nextest_log(&content));
+    }
+
+    // Switch to ANSI/single-line parser when appropriate
+    if looks_single_line_like(&content) {
+        return Ok(parse_rust_log_single_line(&content));
+    }
+
     let mut passed = std::collections::HashSet::new();
     let mut failed = std::collections::HashSet::new();
     let mut ignored = std::collections::HashSet::new();
@@ -767,7 +1051,7 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
             
             match status.as_str() {
                 "ok" => { passed.insert(test_name); }
-                "failed" => { failed.insert(test_name); }
+                "failed" | "error" => { failed.insert(test_name); }
                 "ignored" => { ignored.insert(test_name); }
                 _ => {}
             }
@@ -792,47 +1076,160 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                 pending_tests.insert(test_name, i);
             }
         }
+
+        // Also consider corrupted test lines mixed with debug output
+        if let Some(cap) = CORRUPTED_TEST_LINE_RE.captures(line) {
+            let tn = cap.get(1).unwrap().as_str().to_string();
+            if !passed.contains(&tn) && !failed.contains(&tn) && !ignored.contains(&tn) {
+                pending_tests.insert(tn, i);
+            }
+        }
     }
     
     // For pending tests, search more aggressively for their results
     for (test_name, start_line) in pending_tests {
-        
         // Look in subsequent lines for the result, potentially many lines later
-        for j in start_line + 1..std::cmp::min(start_line + 200, lines.len()) {
+        let initial_limit = 200usize;
+        let extended_limit = 10_000usize; // for verbose logs
+        let mut found = false;
+
+        // heuristic: try normal window first
+        for j in start_line + 1..min(start_line + initial_limit, lines.len()) {
             let line = lines[j];
-            
+
             // Check for standalone status words
             let stripped = line.trim();
-            if stripped == "ok" || stripped == "FAILED" || stripped == "ignored" {
+            if stripped.eq_ignore_ascii_case("ok")
+                || stripped.eq_ignore_ascii_case("FAILED")
+                || stripped.eq_ignore_ascii_case("ignored")
+                || stripped.eq_ignore_ascii_case("error")
+            {
                 let status = stripped.to_lowercase();
                 *freq.entry(test_name.clone()).or_insert(0) += 1;
-                
+
                 match status.as_str() {
-                    "ok" => { passed.insert(test_name); }
-                    "failed" => { failed.insert(test_name); }
-                    "ignored" => { ignored.insert(test_name); }
+                    "ok" => { passed.insert(test_name.clone()); }
+                    "failed" | "error" => { failed.insert(test_name.clone()); }
+                    "ignored" => { ignored.insert(test_name.clone()); }
                     _ => {}
                 }
+                found = true;
                 break;
             }
-            
-            // Check for status words at the end of lines (after debug output)
+
+            // Check for status words at the end of lines (after debug output) OR at the beginning mixed with logging
+            let mut status_match = None;
             if let Some(captures) = STATUS_AT_END_RE.captures(line) {
+                status_match = Some(captures);
+            } else if let Some(captures) = STATUS_AT_START_RE.captures(line) {
+                status_match = Some(captures);
+            }
+
+            if let Some(captures) = status_match {
                 let status = captures.get(1).unwrap().as_str().to_lowercase();
-                *freq.entry(test_name.clone()).or_insert(0) += 1;
                 
-                match status.as_str() {
-                    "ok" => { passed.insert(test_name); }
-                    "failed" => { failed.insert(test_name); }
-                    "ignored" => { ignored.insert(test_name); }
-                    _ => {}
+                // Enhanced filtering to avoid false positives from diagnostic messages
+                if is_diagnostic_error(&status, line) {
+                    continue;
                 }
+                
+                // Also skip if the status word appears in the middle of a diagnostic message
+                if is_status_in_diagnostic_context(&status, line) {
+                    continue;
+                }
+
+                // Special handling for status mixed with logging output
+                // Skip if the status appears mixed with logging output UNLESS there's evidence of a panic for this test
+                let line_lower = line.to_lowercase();
+                if (status == "failed" || status == "error") && 
+                   (line_lower.contains("logging at") || 
+                    line_lower.contains("debug:") || 
+                    line_lower.contains("trace:") || 
+                    line_lower.contains("info:") || 
+                    line_lower.contains("warn:")) {
+                    
+                    // Check if there's a panic message for this specific test in a broader range
+                    let search_start = start_line.saturating_sub(100);
+                    let search_end = std::cmp::min(j + 1, lines.len());
+                    
+                    if !has_panic_evidence(&test_name, &lines, search_start, search_end) {
+                        // This status is mixed with logging output and no panic evidence, skip it
+                        continue;
+                    }
+                }
+                
+                process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
+                found = true;
                 break;
             }
-            
+
             // Stop looking if we hit another test line (but allow some leeway)
             if ANOTHER_TEST_RE.is_match(line) && j > start_line + 5 {
                 break;
+            }
+        }
+
+        // Extended scan window for extremely verbose logs
+        if !found {
+            for j in min(start_line + initial_limit, lines.len())..min(start_line + extended_limit, lines.len()) {
+                let line = lines[j];
+                let stripped = line.trim();
+                if stripped.eq_ignore_ascii_case("ok")
+                    || stripped.eq_ignore_ascii_case("FAILED")
+                    || stripped.eq_ignore_ascii_case("ignored")
+                    || stripped.eq_ignore_ascii_case("error")
+                {
+                    let status = stripped.to_lowercase();
+                    process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
+                    break;
+                }
+
+                // Check for status words at the end of lines (after debug output) OR at the beginning mixed with logging
+                let mut status_match = None;
+                if let Some(captures) = STATUS_AT_END_RE.captures(line) {
+                    status_match = Some(captures);
+                } else if let Some(captures) = STATUS_AT_START_RE.captures(line) {
+                    status_match = Some(captures);
+                }
+
+                if let Some(captures) = status_match {
+                    let status = captures.get(1).unwrap().as_str().to_lowercase();
+                    
+                    // Enhanced filtering to avoid false positives from diagnostic messages
+                    if is_diagnostic_error(&status, line) {
+                        continue;
+                    }
+                    
+                    // Also skip if the status word appears in the middle of a diagnostic message
+                    if is_status_in_diagnostic_context(&status, line) {
+                        continue;
+                    }
+
+                    // Special handling for status mixed with logging output
+                    // Skip if the status appears mixed with logging output UNLESS there's evidence of a panic for this test
+                    let line_lower = line.to_lowercase();
+                    if (status == "failed" || status == "error") && 
+                       (line_lower.contains("logging at") || 
+                        line_lower.contains("debug:") || 
+                        line_lower.contains("trace:") || 
+                        line_lower.contains("info:") || 
+                        line_lower.contains("warn:")) {
+                        
+                        // Check if there's a panic message for this specific test in a broader range
+                        let search_start = start_line.saturating_sub(100);
+                        let search_end = std::cmp::min(j + 1, lines.len());
+                        
+                        if !has_panic_evidence(&test_name, &lines, search_start, search_end) {
+                            // This status is mixed with logging output and no panic evidence, skip it
+                            continue;
+                        }
+                    }
+                    
+                    process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
+                    break;
+                }
+
+                if ANOTHER_TEST_RE.is_match(line) && j > start_line + 50 { break; }
             }
         }
     }
@@ -893,17 +1290,36 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
             }
         }
         
-        // Look for status in this accumulated text
-        if let Some(captures) = STATUS_IN_TEXT_RE.captures(&search_text) {
-            let status = captures.get(1).unwrap().as_str().to_lowercase();
-            *freq.entry(test_name.clone()).or_insert(0) += 1;
+        // Look for status in this accumulated text, but be more selective
+        // Find all status matches and pick the most likely one
+        let mut status_matches = Vec::new();
+        for cap in STATUS_IN_TEXT_RE.captures_iter(&search_text) {
+            let status = cap.get(1).unwrap().as_str().to_lowercase();
+            let match_start = cap.get(0).unwrap().start();
             
-            match status.as_str() {
-                "ok" => { passed.insert(test_name); }
-                "failed" => { failed.insert(test_name); }
-                "ignored" => { ignored.insert(test_name); }
-                _ => {}
+            // Get some context around the match
+            let context_start = match_start.saturating_sub(50);
+            let context_end = std::cmp::min(match_start + 50, search_text.len());
+            let context = &search_text[context_start..context_end].to_lowercase();
+            
+            // Enhanced filtering to avoid false positives
+            if status == "error" && (
+                context.contains("error:") || 
+                context.contains("panic") ||
+                context.contains("custom") ||
+                context.contains("called `result::unwrap()") ||
+                context.contains("thread") ||
+                context.contains("kind:")
+            ) {
+                continue;
             }
+            
+            status_matches.push((status, match_start));
+        }
+        
+        // Use the last (most recent) valid status match
+        if let Some((status, _)) = status_matches.last() {
+            process_test_status(&status, &test_name, &mut passed, &mut failed, &mut ignored, &mut freq);
         }
     }
     
@@ -947,6 +1363,108 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
     })
 }
 
+// ---------------- Duplicate detection (C5) parity----------------
+fn detect_file_boundary(line: &str) -> Option<String> {
+    if let Some(c) = FILE_BOUNDARY_RE_1.captures(line) {
+        return Some(c.get(1).unwrap().as_str().to_string());
+    }
+    if let Some(c) = FILE_BOUNDARY_RE_2.captures(line) {
+        return Some(c.get(1).unwrap().as_str().to_string());
+    }
+    if let Some(c) = FILE_BOUNDARY_RE_3.captures(line) {
+        return Some(c.get(1).unwrap().as_str().to_string());
+    }
+    None
+}
+
+fn extract_test_info_enhanced(line: &str) -> Option<(String, String)> {
+    if let Some(c) = ENH_TEST_RE_1.captures(line) {
+        return Some((
+            c.get(1).unwrap().as_str().trim().to_string(),
+            c.get(2).unwrap().as_str().trim().to_string(),
+        ));
+    }
+    if let Some(c) = ENH_TEST_RE_2.captures(line) {
+        return Some((
+            c.get(1).unwrap().as_str().trim().to_string(),
+            c.get(2).unwrap().as_str().trim().to_string(),
+        ));
+    }
+    None
+}
+
+#[derive(Clone)]
+struct Occur {
+    test_name: String,
+    status: String,
+    line_no: usize,
+    context_before: Vec<String>,
+    context_after: Vec<String>,
+}
+
+fn is_true_duplicate(occ: &[Occur]) -> bool {
+    if occ.len() <= 1 { return false; }
+    let mut lines: Vec<usize> = occ.iter().map(|o| o.line_no).collect();
+    lines.sort_unstable();
+    let mut min_dist = usize::MAX;
+    for i in 1..lines.len() {
+        min_dist = min(min_dist, lines[i] - lines[i-1]);
+    }
+    if min_dist < 10 { return true; }
+    let mut has_fail = false;
+    let mut has_ok = false;
+    for o in occ {
+        let s = o.status.to_lowercase();
+        if s == "failed" || s == "error" { has_fail = true; }
+        if s == "ok" { has_ok = true; }
+    }
+    if has_fail && has_ok { return true; }
+    let contexts: Vec<String> = occ.iter().map(|o| {
+        let mut c = String::new();
+        c.push_str(&o.context_before.join(" "));
+        c.push_str(&o.context_after.join(" "));
+        c.trim().to_string()
+    }).collect();
+    if !contexts.is_empty() && contexts.iter().all(|c| !c.is_empty() && *c == contexts[0]) {
+        return true;
+    }
+    false
+}
+
+fn detect_same_file_duplicates(raw_content: &str) -> Vec<String> {
+    if raw_content.is_empty() { return vec![]; }
+    let lines: Vec<&str> = raw_content.split('\n').collect();
+    let mut current_file = "unknown".to_string();
+    use std::collections::HashMap;
+    let mut per_file: HashMap<String, Vec<Occur>> = HashMap::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(f) = detect_file_boundary(line) {
+            current_file = f;
+            continue;
+        }
+        if let Some((name, status)) = extract_test_info_enhanced(line) {
+            let before = if i >= 2 { lines[i-2..i].iter().map(|s| s.to_string()).collect() } else { vec![] };
+            let after = if i+1 < lines.len() { lines[i+1..min(lines.len(), i+3)].iter().map(|s| s.to_string()).collect() } else { vec![] };
+            per_file.entry(current_file.clone()).or_default().push(Occur{ test_name: name, status, line_no: i, context_before: before, context_after: after });
+        }
+    }
+
+    let mut out = vec![];
+    for (file, occs) in per_file {
+        use std::collections::HashMap;
+        let mut by_name: HashMap<String, Vec<Occur>> = HashMap::new();
+        for o in occs { by_name.entry(o.test_name.clone()).or_default().push(o); }
+        for (name, list) in by_name {
+            if list.len() > 1 && is_true_duplicate(&list) {
+                let places: Vec<String> = list.iter().map(|o| format!("line {}", o.line_no)).collect();
+                out.push(format!("{} (appears {} times in {}: {})", name, places.len(), file, places.join(", ")));
+            }
+        }
+    }
+    out
+}
+
 fn status_lookup(names: &[String], parsed: &ParsedLog) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     for name in names {
@@ -979,15 +1497,16 @@ fn generate_analysis_result(
     let before_s = status_lookup(&universe, before_parsed);
     let after_s = status_lookup(&universe, after_parsed);
     
-    // Rule checks
+    // ---------------- Rule checks parity ----------------
     let c1_hits: Vec<String> = pass_to_pass.iter()
         .filter(|t| base_s.get(*t) == Some(&"failed".to_string()))
         .cloned()
         .collect();
     let c1 = !c1_hits.is_empty();
     
+    // C2: failed in after (not: "not passed")
     let c2_hits: Vec<String> = universe.iter()
-        .filter(|t| after_s.get(*t) != Some(&"passed".to_string()))
+        .filter(|t| after_s.get(*t) == Some(&"failed".to_string()))
         .cloned()
         .collect();
     let c2 = !c2_hits.is_empty();
@@ -998,14 +1517,44 @@ fn generate_analysis_result(
         .collect();
     let c3 = !c3_hits.is_empty();
     
-    let c4_hits: Vec<String> = pass_to_pass.iter()
-        .filter(|t| base_s.get(*t) == Some(&"missing".to_string()) && before_s.get(*t) != Some(&"passed".to_string()))
-        .cloned()
-        .collect();
+    // C4: Report *violations* of the valid P2P pattern:
+    //  base: missing AND (before: failed OR missing) AND after: passed
+    // We mark problem when test violates the above (meets first part(s) but fails after, or passes in before).
+    let mut c4_hits: Vec<String> = vec![];
+    for t in pass_to_pass {
+        let b = base_s.get(t).map(String::as_str).unwrap_or("missing");
+        let be = before_s.get(t).map(String::as_str).unwrap_or("missing");
+        let a = after_s.get(t).map(String::as_str).unwrap_or("missing");
+        if b == "missing" {
+            let before_ok = be == "failed" || be == "missing";
+            let after_ok = a == "passed";
+            if before_ok && !after_ok {
+                c4_hits.push(format!("{t} (missing in base, {be} in before, but {a} in after)"));
+            } else if !before_ok {
+                c4_hits.push(format!("{t} (missing in base but {be} in before - violates C4 pattern)"));
+            }
+        }
+    }
     let c4 = !c4_hits.is_empty();
     
-    // For now, we'll set c5 to false (no duplicates detected)
-    let c5 = false;
+    // C5: true duplicates per log using enhanced detection
+    let mut dup_map = serde_json::Map::new();
+    let base_txt = fs::read_to_string(base_path).unwrap_or_default();
+    let before_txt = fs::read_to_string(before_path).unwrap_or_default();
+    let after_txt = fs::read_to_string(after_path).unwrap_or_default();
+    let base_dups = detect_same_file_duplicates(&base_txt);
+    let before_dups = detect_same_file_duplicates(&before_txt);
+    let after_dups = detect_same_file_duplicates(&after_txt);
+    if !base_dups.is_empty() {
+        dup_map.insert("base".to_string(), serde_json::Value::Array(base_dups.into_iter().take(50).map(serde_json::Value::String).collect()));
+    }
+    if !before_dups.is_empty() {
+        dup_map.insert("before".to_string(), serde_json::Value::Array(before_dups.into_iter().take(50).map(serde_json::Value::String).collect()));
+    }
+    if !after_dups.is_empty() {
+        dup_map.insert("after".to_string(), serde_json::Value::Array(after_dups.into_iter().take(50).map(serde_json::Value::String).collect()));
+    }
+    let c5 = !dup_map.is_empty();
     
     // P2P rejection logic
     let p2p_ignored: Vec<String> = pass_to_pass.iter()
@@ -1099,7 +1648,7 @@ fn generate_analysis_result(
             },
             "c5_duplicates_in_same_log_for_F2P_or_P2P": {
                 "has_problem": c5,
-                "duplicate_examples_per_log": {}
+                "duplicate_examples_per_log": serde_json::Value::Object(dup_map)
             },
         },
         "rejection_reason": {
