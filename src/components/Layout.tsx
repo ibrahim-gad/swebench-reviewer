@@ -75,7 +75,7 @@ export default function Layout({ children }: LayoutProps) {
     }
     // OOB redirect URI
     const redirectUri = "urn:ietf:wg:oauth:2.0:oob";
-    const scope = encodeURIComponent("openid email profile https://www.googleapis.com/auth/drive");
+    const scope = encodeURIComponent("openid email profile https://www.googleapis.com/auth/drive.readonly");
     const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${googleClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&access_type=offline&prompt=consent`;
     await openUrl(url);
     setShowCodeInput(true);
@@ -131,42 +131,20 @@ export default function Layout({ children }: LayoutProps) {
       {/* Navbar / App Bar */}
       <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 shadow-sm flex items-center h-14 px-4 gap-2 shrink-0">
         {/* App Name/Logo */}
-        <div className="flex items-center font-bold text-lg text-blue-700 dark:text-blue-300 mr-6 select-none whitespace-nowrap">
-          <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="flex items-center justify-center flex-row mr-6 select-none h-full relative">
+        <div className="flex flex-col justify-center items-center h-full">
+          <svg className="w-6 h-6 mr-2 text-blue-700 dark:text-blue-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="10" strokeWidth="2" />
             <path d="M8 12l2 2 4-4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          <Link to="/" className="hover:text-blue-800 dark:hover:text-blue-200">
+          </div>
+          <div className="flex flex-col justify-center items-center h-full pt-1">
+          <Link to="/" className="font-bold text-lg text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200 leading-none">
             SWE Reviewer
           </Link>
+          </div>
         </div>
 
-        {/* Navigation Links */}
-        {isAuthenticated && (
-          <nav className="flex gap-6">
-           <Link
-              to="/report-checker"
-              className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                location.pathname === '/report-checker'
-                  ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-              }`}
-            >
-              Report Checker
-            </Link>
-            <Link
-              to="/gdrive-editor"
-              className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                location.pathname === '/' || location.pathname === '/gdrive-editor'
-                  ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-              }`}
-            >
-              gDrive Editor
-            </Link>
-            
-          </nav>
-        )}
 
         {/* Centered file name if open */}
         <div className="flex-1 flex justify-center">
