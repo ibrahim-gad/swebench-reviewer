@@ -1158,7 +1158,8 @@ export default function ReportCheckerPage() {
   const inputTabs = getInputTabs();
 
   const handleSubmit = async () => {
-    if (!deliverableLink.trim()) {
+    const trimmedLink = deliverableLink.trim();
+    if (!trimmedLink) {
       setError("Please enter a deliverable link");
       return;
     }
@@ -1171,7 +1172,7 @@ export default function ReportCheckerPage() {
       // Stage 1: Validating
       setCurrentStage("validating");
       updateStageStatus("validating", "active");
-      const validationData = await invoke("validate_deliverable", { folderLink: deliverableLink }) as ValidationResult;
+      const validationData = await invoke("validate_deliverable", { folderLink: trimmedLink }) as ValidationResult;
       updateStageStatus("validating", "completed");
 
       // Stage 2: Downloading
