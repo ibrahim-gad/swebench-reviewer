@@ -168,22 +168,31 @@ export default function ReportCheckerPage() {
     return false;
   };
 
-  // Helper function to check for additional test-specific violations
-  const hasTestSpecificViolations = (testName: string, testType: "f2p" | "p2p") => {
+  // Helper function to get test-specific violation details
+  const getTestSpecificViolationDetails = (testName: string, testType: "f2p" | "p2p") => {
     const testStatus = getTestStatus(testName, testType);
-    if (!testStatus) return false;
-    
+    if (!testStatus) return [];
+
+    const violations: string[] = [];
+
     // Check for missing or failed tests in after log
-    if (testStatus.after === "missing" || testStatus.after === "failed") {
-      return true;
+    if (testStatus.after === "missing") {
+      violations.push("Test is missing in after log");
+    } else if (testStatus.after === "failed") {
+      violations.push("Test failed in after log");
     }
-    
+
     // Check for F2P tests passing in before log (should fail in before)
     if (testType === "f2p" && testStatus.before === "passed") {
-      return true;
+      violations.push("F2P test is passing in before log - F2P tests should fail before the fix and pass after");
     }
-    
-    return false;
+
+    return violations;
+  };
+
+  // Helper function to check for additional test-specific violations
+  const hasTestSpecificViolations = (testName: string, testType: "f2p" | "p2p") => {
+    return getTestSpecificViolationDetails(testName, testType).length > 0;
   };
 
   // Combined function to check for any violations
@@ -220,23 +229,10 @@ export default function ReportCheckerPage() {
       }
     }
     
-    // Check for test-specific violations
+    // Check for test-specific violations using the shared helper
     const testType = currentSelection === "fail_to_pass" ? "f2p" : "p2p";
-    const testStatus = getTestStatus(testName, testType);
-    
-    if (testStatus) {
-      // Check for missing or failed tests in after log
-      if (testStatus.after === "missing") {
-        errorMessages.push(`Test is missing in after log`);
-      } else if (testStatus.after === "failed") {
-        errorMessages.push(`Test failed in after log`);
-      }
-      
-      // Check for F2P tests passing in before log (should fail in before)
-      if (testType === "f2p" && testStatus.before === "passed") {
-        errorMessages.push(`F2P test is passing in before log - F2P tests should fail before the fix and pass after`);
-      }
-    }
+    const testSpecificViolations = getTestSpecificViolationDetails(testName, testType);
+    errorMessages.push(...testSpecificViolations);
     
     return errorMessages;
   };
