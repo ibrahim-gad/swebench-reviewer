@@ -24,30 +24,34 @@ lazy_static! {
     static ref STATUS_AT_START_RE: Regex = Regex::new(r"(?i)^(ok|FAILED|ignored|error)")
         .expect("Failed to compile STATUS_AT_START_RE regex");
 
-    static ref ANOTHER_TEST_RE: Regex = Regex::new(r"(?i)\btest\s+[\w:]+\s+\.\.\.\s*")
+    static ref ANOTHER_TEST_RE: Regex = Regex::new(r"(?i)\btest\s+[^\s]+\s+\.\.\.\s*")
         .expect("Failed to compile ANOTHER_TEST_RE regex");
 
-    static ref TEST_WITH_O_RE: Regex = Regex::new(r"(?i)\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*o\s*$")
+    static ref TEST_WITH_O_RE: Regex = Regex::new(r"(?i)\btest\s+([^\s]+(?:::\w+)*)\s+\.\.\.\s*o\s*$")
         .expect("Failed to compile TEST_WITH_O_RE regex");
 
-    static ref TEST_STARTS_RE: Regex = Regex::new(r"(?i)\btest\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*")
+    static ref TEST_STARTS_RE: Regex = Regex::new(r"(?i)\btest\s+([^\s]+(?:::\w+)*)\s+\.\.\.\s*")
         .expect("Failed to compile TEST_STARTS_RE regex");
 
     static ref STATUS_IN_TEXT_RE: Regex = Regex::new(r"(?i)\b(ok|failed|ignored|error)\b")
         .expect("Failed to compile STATUS_IN_TEXT_RE regex");
 
     // Additional patterns
-    static ref CORRUPTED_TEST_LINE_RE: Regex = Regex::new(r"(?i)(?:line)?test\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s*")
+    static ref CORRUPTED_TEST_LINE_RE: Regex = Regex::new(r"(?i)(?:line)?test\s+([^\s]+(?:::\w+)*)\s+\.\.\.\s*")
         .expect("Failed to compile CORRUPTED_TEST_LINE_RE regex");
 
     // File boundary hints
-    static ref FILE_BOUNDARY_RE_1: Regex = Regex::new(r"(?i)Running\s+([^/\s]+(?:/[^/\s]+)*\.rs)\s*\(").unwrap();
-    static ref FILE_BOUNDARY_RE_2: Regex = Regex::new(r"(?i)===\s*Running\s+(.+\.rs)").unwrap();
-    static ref FILE_BOUNDARY_RE_3: Regex = Regex::new(r"(?i)test\s+result:\s+ok\.\s+\d+\s+passed.*for\s+(.+\.rs)").unwrap();
+    static ref FILE_BOUNDARY_RE_1: Regex = Regex::new(r"(?i)Running\s+([^\s]+(?:/[^\s]+)*\.(?:rs|fixed))\s*\(").unwrap();
+    static ref FILE_BOUNDARY_RE_2: Regex = Regex::new(r"(?i)===\s*Running\s+(.+\.(?:rs|fixed))").unwrap();
+    static ref FILE_BOUNDARY_RE_3: Regex = Regex::new(r"(?i)test\s+result:\s+ok\.\s+\d+\s+passed.*for\s+(.+\.(?:rs|fixed))").unwrap();
 
     // Enhanced extraction patterns
-    static ref ENH_TEST_RE_1: Regex = Regex::new(r"(?i)\btest\s+([^\s.]+(?:::[^\s.]+)*)\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
-    static ref ENH_TEST_RE_2: Regex = Regex::new(r"(?i)test\s+([a-zA-Z_][a-zA-Z0-9_:]*)\s+\.\.\.\s+(ok|FAILED|ignored|error)").unwrap();
+    static ref ENH_TEST_RE_1: Regex = Regex::new(r"(?i)\btest\s+([^\s]+(?:::[^\s]+)*)\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
+    static ref ENH_TEST_RE_2: Regex = Regex::new(r"(?i)test\s+([^\s]+)\s+\.\.\.\s+(ok|FAILED|ignored|error)").unwrap();
+    
+    // UI test format patterns - handles paths as test names with direct status
+    static ref UI_TEST_PATH_RE: Regex = Regex::new(r"(?i)^([^\s]+(?:/[^\s]+)*\.(?:rs|fixed|toml|txt|md)(?:\s+\(revision\s+[^)]+\))?)\s+\.\.\.\s+(ok|FAILED|ignored|error)\s*$").unwrap();
+    static ref UI_TEST_PATH_SIMPLE_RE: Regex = Regex::new(r"(?i)^([^\s]+(?:/[^\s]+)*\.(?:rs|fixed|toml|txt|md)(?:\s+\(revision\s+[^)]+\))?)\s+\.\.\.\s+(ok|FAILED|ignored|error)\s*$").unwrap();
     
     // Nextest format patterns - handles "PASS [duration] test_name" and "FAIL [duration] test_name"
     static ref NEXTEST_PASS_RE: Regex = Regex::new(r"(?i)^\s*PASS\s+\[[^\]]+\]\s+(.+)$").unwrap();
@@ -61,10 +65,10 @@ lazy_static! {
         .expect("Failed to compile FAILURES_BLOCK_RE regex");
 
     // Additional patterns for single-line parsing to avoid repeated compilation
-    static ref SINGLE_LINE_START_RE: Regex = Regex::new(r"(?i)test\s+([^\s.]+(?:::[^\s.]+)*)\s*\.{2,}").unwrap();
-    static ref SINGLE_LINE_NEXT_TEST_RE: Regex = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}").unwrap();
+    static ref SINGLE_LINE_START_RE: Regex = Regex::new(r"(?i)test\s+([^\s]+(?:::[^\s]+)*)\s*\.{2,}").unwrap();
+    static ref SINGLE_LINE_NEXT_TEST_RE: Regex = Regex::new(r"(?i)test\s+[^\s]+(?:::[^\s]+)*\s*\.{2,}").unwrap();
     static ref SINGLE_LINE_STATUS_AT_START_RE: Regex = Regex::new(r"(?i)^(ok|FAILED|ignored|error)").unwrap();
-    static ref SIMPLE_PATTERN_RE: Regex = Regex::new(r"(?i)test\s+[^\s.]+(?:::[^\s.]+)*\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
+    static ref SIMPLE_PATTERN_RE: Regex = Regex::new(r"(?i)test\s+[^\s]+(?:::[^\s]+)*\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
 }
 
 #[derive(Serialize, Deserialize)]
@@ -806,6 +810,40 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
         }
     }
 
+    // UI test format: "path/to/test.rs ... ok" (without "test" keyword)
+    for line in clean.lines() {
+        if let Some(cap) = UI_TEST_PATH_RE.captures(line) {
+            let name = cap.get(1).unwrap().as_str().to_string();
+            let mut status = cap.get(2).unwrap().as_str().to_lowercase();
+            if status == "failed" || status == "error" {
+                status = "failed".to_string();
+            }
+            match status.as_str() {
+                "ok" => { passed.insert(name); }
+                "failed" => { failed.insert(name); }
+                "ignored" => { ignored.insert(name); }
+                _ => {}
+            }
+        }
+    }
+
+    // UI test format: "path/to/test.toml ... ok" (including .toml files)
+    for line in clean.lines() {
+        if let Some(cap) = UI_TEST_PATH_SIMPLE_RE.captures(line) {
+            let name = cap.get(1).unwrap().as_str().to_string();
+            let mut status = cap.get(2).unwrap().as_str().to_lowercase();
+            if status == "failed" || status == "error" {
+                status = "failed".to_string();
+            }
+            match status.as_str() {
+                "ok" => { passed.insert(name); }
+                "failed" => { failed.insert(name); }
+                "ignored" => { ignored.insert(name); }
+                _ => {}
+            }
+        }
+    }
+
     // harder cases: "test name ... <debug> STATUS" before next test
     for cap in SINGLE_LINE_START_RE.captures_iter(&clean) {
         let name = cap.get(1).unwrap().as_str().to_string();
@@ -958,7 +996,19 @@ fn looks_single_line_like(text: &str) -> bool {
     let line_count = text.lines().count();
     let has_ansi = ANSI_RE.is_match(text);
     let test_count = SIMPLE_PATTERN_RE.find_iter(text).count();
-    (line_count <= 3 && test_count > 5) || has_ansi
+    
+    // Count UI test patterns line-by-line since they use line anchors
+    let mut ui_test_count = 0;
+    for line in text.lines() {
+        if UI_TEST_PATH_RE.is_match(line) || UI_TEST_PATH_SIMPLE_RE.is_match(line) {
+            ui_test_count += 1;
+        }
+    }
+    
+    // Check if it looks like a UI test format (many path-based test results)
+    let has_ui_tests = ui_test_count > 10;
+    
+    (line_count <= 3 && test_count > 5) || has_ansi || has_ui_tests
 }
 
 fn looks_nextest_format(text: &str) -> bool {
@@ -1390,6 +1440,21 @@ fn extract_test_info_enhanced(line: &str) -> Option<(String, String)> {
             c.get(2).unwrap().as_str().trim().to_string(),
         ));
     }
+    
+    // Check for UI test format patterns
+    if let Some(c) = UI_TEST_PATH_RE.captures(line) {
+        return Some((
+            c.get(1).unwrap().as_str().trim().to_string(),
+            c.get(2).unwrap().as_str().trim().to_string(),
+        ));
+    }
+    if let Some(c) = UI_TEST_PATH_SIMPLE_RE.captures(line) {
+        return Some((
+            c.get(1).unwrap().as_str().trim().to_string(),
+            c.get(2).unwrap().as_str().trim().to_string(),
+        ));
+    }
+    
     None
 }
 
@@ -1408,7 +1473,7 @@ fn is_true_duplicate(occ: &[Occur]) -> bool {
     lines.sort_unstable();
     let mut min_dist = usize::MAX;
     for i in 1..lines.len() {
-        min_dist = min(min_dist, lines[i] - lines[i-1]);
+        min_dist = std::cmp::min(min_dist, lines[i] - lines[i-1]);
     }
     if min_dist < 10 { return true; }
     let mut has_fail = false;
