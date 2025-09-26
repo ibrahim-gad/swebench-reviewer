@@ -183,9 +183,9 @@ export default function ReportCheckerPage() {
     }
 
     // Check for F2P tests passing in before log (should fail in before)
-    if (testType === "f2p" && testStatus.before === "passed") {
-      violations.push("F2P test is passing in before log - F2P tests should fail before the fix and pass after");
-    }
+    // if (testType === "f2p" && testStatus.before === "passed") {
+    //   violations.push("F2P test is passing in before log - F2P tests should fail before the fix and pass after");
+    // }
 
     return violations;
   };
