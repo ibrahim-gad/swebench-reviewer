@@ -57,6 +57,9 @@ lazy_static! {
     static ref NEXTEST_PASS_RE: Regex = Regex::new(r"(?i)^\s*PASS\s+\[[^\]]+\]\s+(.+)$").unwrap();
     static ref NEXTEST_FAIL_RE: Regex = Regex::new(r"(?i)^\s*FAIL\s+\[[^\]]+\]\s+(.+)$").unwrap();
     static ref NEXTEST_SKIP_RE: Regex = Regex::new(r"(?i)^\s*(SKIP|IGNORED)\s+\[[^\]]+\]\s+(.+)$").unwrap();
+    
+    // START pattern for nextest - captures test names from START lines
+    static ref NEXTEST_START_RE: Regex = Regex::new(r"(?i)^\s*START\s+(.+)$").unwrap();
 
     // ANSI escape detection
     static ref ANSI_RE: Regex = Regex::new(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])").unwrap();
@@ -69,6 +72,9 @@ lazy_static! {
     static ref SINGLE_LINE_NEXT_TEST_RE: Regex = Regex::new(r"(?i)test\s+[^\s]+(?:::[^\s]+)*\s*\.{2,}").unwrap();
     static ref SINGLE_LINE_STATUS_AT_START_RE: Regex = Regex::new(r"(?i)^(ok|FAILED|ignored|error)").unwrap();
     static ref SIMPLE_PATTERN_RE: Regex = Regex::new(r"(?i)test\s+[^\s]+(?:::[^\s]+)*\s*\.{2,}\s*(ok|FAILED|ignored|error)").unwrap();
+    
+    // Pattern for tests that have diagnostic info after the "..." but before status
+    static ref TEST_WITH_DIAGNOSTICS_RE: Regex = Regex::new(r"(?i)\btest\s+(.+?)\s+\.\.\.\s*(?:error:|$)").unwrap();
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1019,6 +1025,7 @@ fn looks_nextest_format(text: &str) -> bool {
         "Starting tests across",
         "PASS [",
         "FAIL [",
+        "START             ", // Added START pattern from your example
     ];
     
     let has_indicators = nextest_indicators.iter().any(|indicator| 
@@ -1030,7 +1037,10 @@ fn looks_nextest_format(text: &str) -> bool {
                        NEXTEST_FAIL_RE.find_iter(text).count() + 
                        NEXTEST_SKIP_RE.find_iter(text).count();
     
-    has_indicators || nextest_lines > 5
+    // Also check for the mixed format pattern with traditional + nextest
+    let has_mixed_format = text.contains("PASS [") && text.contains("test ") && text.contains("... ok");
+    
+    has_indicators || nextest_lines > 5 || has_mixed_format
 }
 
 fn parse_nextest_log(text: &str) -> ParsedLog {
@@ -1038,8 +1048,10 @@ fn parse_nextest_log(text: &str) -> ParsedLog {
     let mut failed = std::collections::HashSet::new();
     let mut ignored = std::collections::HashSet::new();
 
+    let lines: Vec<&str> = text.lines().collect();
+
     // Parse nextest format using separate regex patterns for better accuracy
-    for line in text.lines() {
+    for (i, line) in lines.iter().enumerate() {
         // Parse PASS lines
         if let Some(captures) = NEXTEST_PASS_RE.captures(line) {
             let test_name = captures.get(1).unwrap().as_str().trim().to_string();
@@ -1059,6 +1071,73 @@ fn parse_nextest_log(text: &str) -> ParsedLog {
             let test_name = captures.get(2).unwrap().as_str().trim().to_string();
             ignored.insert(test_name);
             continue;
+        }
+        
+        // Also handle traditional Rust test patterns for mixed format logs
+        if let Some(captures) = TEST_LINE_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let status = captures.get(2).unwrap().as_str().to_lowercase();
+            
+            match status.as_str() {
+                "ok" => { passed.insert(test_name); }
+                "failed" | "error" => { failed.insert(test_name); }
+                "ignored" => { ignored.insert(test_name); }
+                _ => {}
+            }
+            continue;
+        }
+        
+        // Handle enhanced test patterns as well
+        if let Some(captures) = ENH_TEST_RE_1.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let mut status = captures.get(2).unwrap().as_str().to_lowercase();
+            if status == "failed" || status == "error" {
+                status = "failed".to_string();
+            }
+            match status.as_str() {
+                "ok" => { passed.insert(test_name); }
+                "failed" => { failed.insert(test_name); }
+                "ignored" => { ignored.insert(test_name); }
+                _ => {}
+            }
+            continue;
+        }
+        
+        // Handle the diagnostic pattern: test starts with error/diagnostic but ends with status
+        if let Some(captures) = TEST_START_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let remainder = captures.get(2).unwrap().as_str().trim();
+            
+            // Skip if we already processed this test
+            if passed.contains(&test_name) || failed.contains(&test_name) || ignored.contains(&test_name) {
+                continue;
+            }
+            
+            // Look for diagnostic pattern: test starts with diagnostic info or is empty after "..."
+            if remainder.starts_with("error:") || remainder.is_empty() {
+                // Search forward for the final status
+                for j in (i + 1)..std::cmp::min(i + 50, lines.len()) {
+                    let search_line = lines[j].trim();
+                    
+                    // Stop if we hit another test
+                    if TEST_START_RE.is_match(lines[j]) {
+                        break;
+                    }
+                    
+                    // Look for standalone status words
+                    if search_line.eq_ignore_ascii_case("ok") {
+                        passed.insert(test_name.clone());
+                        break;
+                    } else if search_line.eq_ignore_ascii_case("failed") || 
+                             search_line.eq_ignore_ascii_case("error") {
+                        failed.insert(test_name.clone());
+                        break;
+                    } else if search_line.eq_ignore_ascii_case("ignored") {
+                        ignored.insert(test_name.clone());
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -1373,6 +1452,57 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
         }
     }
     
+    // Fifth pass: handle tests with diagnostic output followed by status on separate line
+    // This handles patterns like:
+    // test name ... error: some diagnostic
+    // more diagnostic lines
+    // ok
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(captures) = TEST_START_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let remainder = captures.get(2).unwrap().as_str().trim();
+            
+            // Skip if we already processed this test
+            if passed.contains(&test_name) || failed.contains(&test_name) || ignored.contains(&test_name) {
+                continue;
+            }
+            
+            // Look for diagnostic pattern: test starts with diagnostic info but no immediate status
+            if remainder.starts_with("error:") || remainder.is_empty() {
+                // Search forward for the final status (usually "ok", "failed", etc.)
+                let mut found_status = false;
+                for j in (i + 1)..std::cmp::min(i + 50, lines.len()) {
+                    let search_line = lines[j].trim();
+                    
+                    // Stop if we hit another test
+                    if TEST_START_RE.is_match(lines[j]) {
+                        break;
+                    }
+                    
+                    // Look for standalone status words
+                    if search_line.eq_ignore_ascii_case("ok") {
+                        passed.insert(test_name.clone());
+                        found_status = true;
+                        break;
+                    } else if search_line.eq_ignore_ascii_case("failed") || 
+                             search_line.eq_ignore_ascii_case("error") {
+                        failed.insert(test_name.clone());
+                        found_status = true;
+                        break;
+                    } else if search_line.eq_ignore_ascii_case("ignored") {
+                        ignored.insert(test_name.clone());
+                        found_status = true;
+                        break;
+                    }
+                }
+                
+                if found_status {
+                    *freq.entry(test_name).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
     // Also read the "failures:" block to catch names not emitted on one-line form
     let mut collecting = false;
     for line in &lines {
