@@ -566,6 +566,7 @@ pub struct LogSearchResults {
     pub base_results: Vec<SearchResult>,
     pub before_results: Vec<SearchResult>,
     pub after_results: Vec<SearchResult>,
+    pub agent_results: Vec<SearchResult>,
 }
 
 pub fn get_test_lists(file_paths: Vec<String>) -> Result<TestLists, String> {
@@ -618,6 +619,7 @@ pub fn search_logs(file_paths: Vec<String>, test_name: String) -> Result<LogSear
     let base_log = file_paths.iter().find(|path| path.to_lowercase().contains("base.log"));
     let before_log = file_paths.iter().find(|path| path.to_lowercase().contains("before.log"));
     let after_log = file_paths.iter().find(|path| path.to_lowercase().contains("after.log"));
+    let agent_log = file_paths.iter().find(|path| path.to_lowercase().contains("post_agent_patch.log") || path.to_lowercase().contains("agent.log"));
     
     let base_results = if let Some(path) = base_log {
         search_in_log_file(path, &test_name)?
@@ -636,14 +638,21 @@ pub fn search_logs(file_paths: Vec<String>, test_name: String) -> Result<LogSear
     } else {
         Vec::new()
     };
+
+    let agent_results = if let Some(path) = agent_log {
+        search_in_log_file(path, &test_name)?
+    } else {
+        Vec::new()
+    };
     
-    println!("Search results: base={}, before={}, after={}", 
-             base_results.len(), before_results.len(), after_results.len());
+    println!("Search results: base={}, before={}, after={}, agent={}", 
+             base_results.len(), before_results.len(), after_results.len(), agent_results.len());
     
     Ok(LogSearchResults {
         base_results,
         before_results,
         after_results,
+        agent_results,
     })
 }
 
@@ -688,6 +697,7 @@ pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, 
     let base_log = file_paths.iter().find(|path| path.to_lowercase().contains("base.log"));
     let before_log = file_paths.iter().find(|path| path.to_lowercase().contains("before.log"));
     let after_log = file_paths.iter().find(|path| path.to_lowercase().contains("after.log"));
+    let agent_log = file_paths.iter().find(|path| path.to_lowercase().contains("post_agent_patch.log") || path.to_lowercase().contains("agent.log"));
     
     if base_log.is_none() || before_log.is_none() || after_log.is_none() {
         return Err("Missing required log files (base.log, before.log, after.log)".to_string());
@@ -698,16 +708,25 @@ pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, 
     let before_parsed = parse_rust_log_file(before_log.unwrap())?;
     let after_parsed = parse_rust_log_file(after_log.unwrap())?;
     
+    // Parse agent log if available
+    let agent_parsed = if let Some(agent_path) = agent_log {
+        Some(parse_rust_log_file(agent_path)?)
+    } else {
+        None
+    };
+    
     // Generate analysis result similar to swebench-log-analyzer-rust
     let analysis_result = generate_analysis_result(
         &base_parsed,
         &before_parsed, 
         &after_parsed,
+        agent_parsed.as_ref(),
         &pass_to_pass,
         &fail_to_pass,
         base_log.unwrap(),
         before_log.unwrap(),
-        after_log.unwrap()
+        after_log.unwrap(),
+        agent_log
     );
     
     Ok(analysis_result)
@@ -1680,17 +1699,24 @@ fn generate_analysis_result(
     base_parsed: &ParsedLog,
     before_parsed: &ParsedLog,
     after_parsed: &ParsedLog,
+    agent_parsed: Option<&ParsedLog>,
     pass_to_pass: &[String],
     fail_to_pass: &[String],
     base_path: &str,
     before_path: &str,
     after_path: &str,
+    agent_path: Option<&String>,
 ) -> serde_json::Value {
     let universe: Vec<String> = pass_to_pass.iter().chain(fail_to_pass.iter()).cloned().collect();
     
     let base_s = status_lookup(&universe, base_parsed);
     let before_s = status_lookup(&universe, before_parsed);
     let after_s = status_lookup(&universe, after_parsed);
+    let agent_s = if let Some(agent_parsed) = agent_parsed {
+        status_lookup(&universe, agent_parsed)
+    } else {
+        std::collections::HashMap::new()
+    };
     
     // ---------------- Rule checks parity ----------------
     let c1_hits: Vec<String> = pass_to_pass.iter()
@@ -1801,6 +1827,7 @@ fn generate_analysis_result(
         test_data.insert("base".to_string(), serde_json::Value::String(base_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("agent".to_string(), serde_json::Value::String(agent_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         p2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
     }
     
@@ -1811,7 +1838,42 @@ fn generate_analysis_result(
         test_data.insert("base".to_string(), serde_json::Value::String(base_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("agent".to_string(), serde_json::Value::String(agent_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         f2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
+    }
+    
+    // Generate debug_log_counts
+    let mut debug_log_counts = vec![
+        serde_json::json!({
+            "label": "base",
+            "passed": base_parsed.passed.len(),
+            "failed": base_parsed.failed.len(),
+            "ignored": base_parsed.ignored.len(),
+            "all": base_parsed.all.len(),
+        }),
+        serde_json::json!({
+            "label": "before",
+            "passed": before_parsed.passed.len(),
+            "failed": before_parsed.failed.len(),
+            "ignored": before_parsed.ignored.len(),
+            "all": before_parsed.all.len(),
+        }),
+        serde_json::json!({
+            "label": "after",
+            "passed": after_parsed.passed.len(),
+            "failed": after_parsed.failed.len(),
+            "ignored": after_parsed.ignored.len(),
+            "all": after_parsed.all.len(),
+        }),
+    ];
+    if let Some(agent_parsed) = agent_parsed {
+        debug_log_counts.push(serde_json::json!({
+            "label": "agent",
+            "passed": agent_parsed.passed.len(),
+            "failed": agent_parsed.failed.len(),
+            "ignored": agent_parsed.ignored.len(),
+            "all": agent_parsed.all.len(),
+        }));
     }
     
     serde_json::json!({
@@ -1819,6 +1881,7 @@ fn generate_analysis_result(
             "base_log": base_path,
             "before_log": before_path,
             "after_log": after_path,
+            "agent_log": agent_path.map(|p| p.as_str()).unwrap_or(""),
         },
         "counts": {
             "P2P": pass_to_pass.len(),
@@ -1859,28 +1922,6 @@ fn generate_analysis_result(
         },
         "p2p_analysis": p2p_analysis,
         "f2p_analysis": f2p_analysis,
-        "debug_log_counts": [
-            {
-                "label": "base",
-                "passed": base_parsed.passed.len(),
-                "failed": base_parsed.failed.len(),
-                "ignored": base_parsed.ignored.len(),
-                "all": base_parsed.all.len(),
-            },
-            {
-                "label": "before",
-                "passed": before_parsed.passed.len(),
-                "failed": before_parsed.failed.len(),
-                "ignored": before_parsed.ignored.len(),
-                "all": before_parsed.all.len(),
-            },
-            {
-                "label": "after",
-                "passed": after_parsed.passed.len(),
-                "failed": after_parsed.failed.len(),
-                "ignored": after_parsed.ignored.len(),
-                "all": after_parsed.all.len(),
-            },
-        ],
+        "debug_log_counts": serde_json::Value::Array(debug_log_counts)
     })
 }

@@ -118,6 +118,15 @@ pub async fn validate_deliverable(folder_link: String) -> Result<ValidationResul
         None => return Err("Missing required 'logs' folder (case insensitive search)".to_string()),
     };
     
+    // Rule 5: Check for results folder (optional, but if present, we'll use it)
+    let results_folder = files.iter().find(|file| {
+        let file_name = file["name"].as_str().unwrap_or("").to_lowercase();
+        file_name == "results" &&
+        file["mimeType"].as_str() == Some("application/vnd.google-apps.folder")
+    });
+    
+    println!("Results folder found: {}", results_folder.is_some());
+
     // Get logs folder contents
     let mut logs_contents = get_folder_contents(logs_folder_id, &access_token).await;
     if logs_contents.is_err() {
@@ -179,6 +188,51 @@ pub async fn validate_deliverable(folder_link: String) -> Result<ValidationResul
         }
     }
     
+    // 3. Add report.json from results folder if it exists
+    if let Some(results_folder) = results_folder {
+        println!("Found results folder, attempting to get contents...");
+        let results_folder_id = results_folder["id"].as_str().unwrap_or("");
+        
+        // Get results folder contents
+        let mut results_contents = get_folder_contents(results_folder_id, &access_token).await;
+        if results_contents.is_err() {
+            println!("First attempt to get results folder contents failed, retrying...");
+            results_contents = get_folder_contents(results_folder_id, &access_token).await;
+        }
+        
+        if let Ok(results_contents) = results_contents {
+            let empty_vec = vec![];
+            let results_files = results_contents["files"].as_array().unwrap_or(&empty_vec);
+            println!("Found {} files in results folder", results_files.len());
+            
+            // Debug: List all files in results folder
+            for file in results_files {
+                let file_name = file["name"].as_str().unwrap_or("unknown");
+                println!("Results folder file: {}", file_name);
+            }
+            
+            // Look for report.json file
+            if let Some(report_file) = results_files.iter().find(|file| {
+                let file_name = file["name"].as_str().unwrap_or("").to_lowercase();
+                file_name == "report.json" &&
+                file["mimeType"].as_str() != Some("application/vnd.google-apps.folder")
+            }) {
+                println!("Found report.json file in results folder, adding to download list");
+                files_to_download.push(FileInfo {
+                    id: report_file["id"].as_str().unwrap_or("").to_string(),
+                    name: report_file["name"].as_str().unwrap_or("").to_string(),
+                    path: format!("results/{}", report_file["name"].as_str().unwrap_or("")),
+                });
+            } else {
+                println!("No report.json file found in results folder");
+            }
+        } else {
+            println!("Failed to get results folder contents: {:?}", results_contents.err());
+        }
+    } else {
+        println!("No results folder found in the deliverable");
+    }
+    
     
     Ok(ValidationResult {
         files_to_download,
@@ -217,8 +271,10 @@ pub async fn download_deliverable(files_to_download: Vec<FileInfo>, folder_id: S
     
     // Check if we already have this deliverable downloaded
     if persist_dir.exists() {
-        // Return the cached result
+        // Check if ALL files exist in cache, not just some
         let mut cached_files = Vec::new();
+        let mut all_files_cached = true;
+        
         for file_info in &files_to_download {
             let cached_file_path = persist_dir.join(&file_info.path);
             if cached_file_path.exists() {
@@ -227,14 +283,22 @@ pub async fn download_deliverable(files_to_download: Vec<FileInfo>, folder_id: S
                     name: file_info.name.clone(),
                     path: cached_file_path.to_string_lossy().to_string(),
                 });
+            } else {
+                println!("Cache miss: file not found at {}", cached_file_path.display());
+                all_files_cached = false;
+                break;
             }
         }
         
-        if !cached_files.is_empty() {
+        // Only return cached result if ALL files are present
+        if all_files_cached && !cached_files.is_empty() {
+            println!("All {} files found in cache, returning cached result", cached_files.len());
             return Ok(DownloadResult {
                 temp_directory: persist_dir.to_string_lossy().to_string(),
                 downloaded_files: cached_files,
             });
+        } else {
+            println!("Cache incomplete, will re-download all files");
         }
     }
     
@@ -300,11 +364,14 @@ pub async fn download_deliverable(files_to_download: Vec<FileInfo>, folder_id: S
         let relative_path = source.strip_prefix(&temp_path).unwrap();
         let dest = persist_dir.join(relative_path);
         
+        println!("Copying file: {} -> {}", source.display(), dest.display());
+        
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("Failed to create dest dir: {}", e))?;
         }
         
-        fs::copy(source, &dest).map_err(|e| format!("Failed to copy file: {}", e))?;
+        fs::copy(source, &dest).map_err(|e| format!("Failed to copy file {}: {}", file_info.name, e))?;
+        println!("Successfully copied: {}", file_info.name);
     }
     
     // Update file paths to point to persistent directory
@@ -314,11 +381,19 @@ pub async fn download_deliverable(files_to_download: Vec<FileInfo>, folder_id: S
         let relative_path = source.strip_prefix(&temp_path).unwrap();
         let new_path = persist_dir.join(relative_path);
         
+        println!("Updating file path: {} -> {}", file_info.path, new_path.display());
+        
         updated_files.push(FileInfo {
             id: file_info.id,
-            name: file_info.name,
+            name: file_info.name.clone(),
             path: new_path.to_string_lossy().to_string(),
         });
+        println!("Added to final result: {} at {}", file_info.name, new_path.display());
+    }
+    
+    println!("Final download result contains {} files:", updated_files.len());
+    for file in &updated_files {
+        println!("  - {}: {}", file.name, file.path);
     }
     
     Ok(DownloadResult {
@@ -347,6 +422,12 @@ pub async fn process_deliverable(downloaded_files: Vec<FileInfo>) -> Result<serd
 }
 
 pub fn get_file_content(file_type: String, file_paths: Vec<String>) -> Result<String, String> {
+    println!("=== GET_FILE_CONTENT DEBUG ===");
+    println!("Looking for file type '{}' in paths:", file_type);
+    for (i, path) in file_paths.iter().enumerate() {
+        println!("  [{}]: {}", i, path);
+    }
+    
     // Find the file with the matching type in the file paths
     let file_extensions = match file_type.as_str() {
         "base" => vec!["base.log", "base.txt"],
@@ -354,26 +435,42 @@ pub fn get_file_content(file_type: String, file_paths: Vec<String>) -> Result<St
         "after" => vec!["after.log", "after.txt"],
         "agent" => vec!["post_agent_patch"],
         "main_json" => vec!["main/", "report.json", "summary.json"],
-        "report" => vec!["report.json", "analysis.json", "results.json"],
+        "report" => vec!["results/report.json", "report.json", "results/", "analysis.json", "results.json"],
         _ => return Err(format!("Unknown file type: {}", file_type)),
     };
+
+    println!("Using search patterns for '{}': {:?}", file_type, file_extensions);
 
     // Look for a file that matches the expected extensions
     for path in &file_paths {
         let path_lower = path.to_lowercase();
+        println!("Checking path: {} (lowercase: {})", path, path_lower);
+        
         for extension in &file_extensions {
-            if path_lower.contains(extension) {
+            let extension_lower = extension.to_lowercase();
+            println!("  Testing pattern '{}' against path", extension_lower);
+            
+            if path_lower.contains(&extension_lower) {
+                println!("✓ MATCH FOUND: {} contains '{}'", path, extension_lower);
                 match fs::read_to_string(path) {
-                    Ok(content) => return Ok(content),
+                    Ok(content) => {
+                        println!("✓ Successfully read file: {} ({} bytes)", path, content.len());
+                        println!("=== END GET_FILE_CONTENT DEBUG ===");
+                        return Ok(content);
+                    },
                     Err(e) => {
-                        eprintln!("Failed to read file {}: {}", path, e);
+                        eprintln!("✗ Failed to read file {}: {}", path, e);
                         continue;
                     }
                 }
+            } else {
+                println!("  ✗ No match: '{}' not found in '{}'", extension_lower, path_lower);
             }
         }
     }
-    
+
     // If no file found, return a placeholder message
+    println!("✗ No {} file found in the provided paths", file_type);
+    println!("=== END GET_FILE_CONTENT DEBUG ===");
     Ok(format!("No {} file found in the provided paths", file_type))
 }

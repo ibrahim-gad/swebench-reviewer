@@ -63,7 +63,7 @@ interface AnalysisTableData {
   after_status: "passed" | "failed" | "non_existing";
 }
 
-type TabKey = "base" | "before" | "after" | "agent" | "main_json" | "analysis" | "base_analysis" | "before_analysis" | "after_analysis" | "agent_analysis";
+type TabKey = "base" | "before" | "after" | "agent" | "main_json" | "report" | "analysis" | "base_analysis" | "before_analysis" | "after_analysis" | "agent_analysis";
 type MainTabKey = "input" | /* "result" | */ "manual_checker"; // COMMENTED OUT AGENTIC FUNCTIONALITY
 
 export default function ReportCheckerPage() {
@@ -125,12 +125,14 @@ export default function ReportCheckerPage() {
   const [searchResults, setSearchResults] = useState<{
     base: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
     before: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
-    after: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>
-  }>({ base: [], before: [], after: [] });
+    after: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
+    agent: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>
+  }>({ base: [], before: [], after: [], agent: [] });
   const [searchResultIndices, setSearchResultIndices] = useState({
     base: 0,
     before: 0,
-    after: 0
+    after: 0,
+    agent: 0
   });
 
   // Helper function to get test status from analysis result
@@ -146,7 +148,8 @@ export default function ReportCheckerPage() {
     return {
       base: analysis.base || "missing",
       before: analysis.before || "missing", 
-      after: analysis.after || "missing"
+      after: analysis.after || "missing",
+      agent: analysis.agent || "missing"
     };
   };
 
@@ -339,8 +342,8 @@ export default function ReportCheckerPage() {
     setSelectedFailToPassIndex(0);
     setSelectedPassToPassIndex(0);
     setCurrentSelection("fail_to_pass");
-    setSearchResults({ base: [], before: [], after: [] });
-    setSearchResultIndices({ base: 0, before: 0, after: 0 });
+    setSearchResults({ base: [], before: [], after: [], agent: [] });
+    setSearchResultIndices({ base: 0, before: 0, after: 0, agent: 0 });
     // Reset filter state
     setFailToPassFilter("");
     setPassToPassFilter("");
@@ -366,7 +369,7 @@ export default function ReportCheckerPage() {
       const contents: FileContents = {};
       
       // Load each file type
-      const fileTypes = ["base", "before", "after", "agent", "main_json"];
+      const fileTypes = ["base", "before", "after", "agent", "main_json", "report"];
       
       for (const fileType of fileTypes) {
         try {
@@ -376,7 +379,7 @@ export default function ReportCheckerPage() {
           }) as string;
           
           // Determine file type - only JSON files are treated as JSON
-          const isJsonType = fileType.includes("json");
+          const isJsonType = fileType.includes("json") || fileType === "report";
           contents[fileType as TabKey] = {
             content,
             file_type: isJsonType ? "json" : "text"
@@ -444,7 +447,7 @@ export default function ReportCheckerPage() {
       
       // Initialize editable contents for JSON tabs
       const editableInit: {[key in TabKey]?: string} = {};
-      for (const key of ["main_json"] as TabKey[]) {
+      for (const key of ["main_json", "report"] as TabKey[]) {
         if (contents[key] && contents[key].file_type === "json") {
           editableInit[key] = contents[key].content;
         }
@@ -615,20 +618,22 @@ export default function ReportCheckerPage() {
       }) as {
         base_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
         before_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
-        after_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>
+        after_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>,
+        agent_results: Array<{line_number: number, line_content: string, context_before: string[], context_after: string[]}>
       };
       
       setSearchResults({
         base: results.base_results,
         before: results.before_results,
-        after: results.after_results
+        after: results.after_results,
+        agent: results.agent_results
       });
       
       // Reset search result indices
-      setSearchResultIndices({ base: 0, before: 0, after: 0 });
+      setSearchResultIndices({ base: 0, before: 0, after: 0, agent: 0 });
     } catch (error) {
       console.error("Failed to search logs:", error);
-      setSearchResults({ base: [], before: [], after: [] });
+      setSearchResults({ base: [], before: [], after: [], agent: [] });
     }
   };
 
@@ -720,7 +725,7 @@ export default function ReportCheckerPage() {
     return () => clearTimeout(timeoutId);
   }, [activeMainTab, currentSelection, selectedFailToPassIndex, selectedPassToPassIndex]);
 
-  const handleSearchResultNavigation = (logType: "base" | "before" | "after", direction: "next" | "prev") => {
+  const handleSearchResultNavigation = (logType: "base" | "before" | "after" | "agent", direction: "next" | "prev") => {
     const currentResults = searchResults[logType];
     if (currentResults.length === 0) return;
     
@@ -1149,6 +1154,7 @@ export default function ReportCheckerPage() {
     { key: "after" as TabKey, label: "After" },
     { key: "agent" as TabKey, label: "Agent" },
     { key: "main_json" as TabKey, label: "Main Json" },
+    { key: "report" as TabKey, label: "Report" },
   ];
 
   const inputTabs = getInputTabs();
@@ -1533,6 +1539,7 @@ export default function ReportCheckerPage() {
                                     {renderStatusIcon(testStatus.base)}
                                     {renderStatusIcon(testStatus.before)}
                                     {renderStatusIcon(testStatus.after)}
+                                    {renderStatusIcon(testStatus.agent)}
                                   </>
                                 )}
                                 {hasError && (
@@ -1603,6 +1610,7 @@ export default function ReportCheckerPage() {
                                     {renderStatusIcon(testStatus.base)}
                                     {renderStatusIcon(testStatus.before)}
                                     {renderStatusIcon(testStatus.after)}
+                                    {renderStatusIcon(testStatus.agent)}
                                   </>
                                 )}
                                 {hasError && (
@@ -1625,7 +1633,7 @@ export default function ReportCheckerPage() {
               {/* Log Search Results Section (Bottom) */}
               <div className="h-1/2 flex">
                 {/* Base Log Results */}
-                <div className="w-1/3 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+                <div className="w-1/4 border-r border-gray-200 dark:border-gray-700 flex flex-col">
                   <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600 flex items-center justify-between">
                     <h4 className="font-medium text-gray-900 dark:text-white text-sm">
                       Base Log ({searchResults.base.length} results)
@@ -1696,7 +1704,7 @@ export default function ReportCheckerPage() {
                 </div>
                 
                 {/* Before Log Results */}
-                <div className="w-1/3 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+                <div className="w-1/4 border-r border-gray-200 dark:border-gray-700 flex flex-col">
                   <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600 flex items-center justify-between">
                     <h4 className="font-medium text-gray-900 dark:text-white text-sm">
                       Before Log ({searchResults.before.length} results)
@@ -1767,7 +1775,7 @@ export default function ReportCheckerPage() {
                 </div>
                 
                 {/* After Log Results */}
-                <div className="w-1/3 flex flex-col">
+                <div className="w-1/4 border-r border-gray-200 dark:border-gray-700 flex flex-col">
                   <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600 flex items-center justify-between">
                     <h4 className="font-medium text-gray-900 dark:text-white text-sm">
                       After Log ({searchResults.after.length} results)
@@ -1797,6 +1805,77 @@ export default function ReportCheckerPage() {
                       <div className="font-mono text-xs">
                         {(() => {
                           const result = searchResults.after[searchResultIndices.after];
+                          const startLineNumber = result.line_number - result.context_before.length;
+                          let currentLineNumber = startLineNumber;
+                          
+                          return (
+                            <>
+                              {/* Context before */}
+                              {result.context_before.map((line, i) => (
+                                <div key={`before-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                              {/* Highlighted match */}
+                              <div className="flex bg-yellow-200 dark:bg-yellow-800 text-gray-900 dark:text-gray-100 font-bold">
+                                <span className="w-12 text-right pr-2 text-gray-700 dark:text-gray-300 flex-shrink-0">
+                                  {currentLineNumber++}
+                                </span>
+                                <span className="flex-1">{result.line_content}</span>
+                              </div>
+                              {/* Context after */}
+                              {result.context_after.map((line, i) => (
+                                <div key={`after-${i}`} className="flex text-gray-500 dark:text-gray-400">
+                                  <span className="w-12 text-right pr-2 text-gray-400 dark:text-gray-500 flex-shrink-0">
+                                    {currentLineNumber++}
+                                  </span>
+                                  <span className="flex-1">{line}</span>
+                                </div>
+                              ))}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="text-gray-500 dark:text-gray-400 text-sm">No matches found</div>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Agent Log Results */}
+                <div className="w-1/4 flex flex-col">
+                  <div className="bg-gray-50 dark:bg-gray-700 px-4 py-2 border-b border-gray-200 dark:border-gray-600 flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                      Agent Log ({searchResults.agent.length} results)
+                    </h4>
+                    {searchResults.agent.length > 1 && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleSearchResultNavigation("agent", "prev")}
+                          className="px-1 py-0 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          ←
+                        </button>
+                        <span className="text-xs text-gray-500">
+                          {searchResultIndices.agent + 1}/{searchResults.agent.length}
+                        </span>
+                        <button
+                          onClick={() => handleSearchResultNavigation("agent", "next")}
+                          className="px-1 py-0 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 overflow-auto p-4">
+                    {searchResults.agent.length > 0 ? (
+                      <div className="font-mono text-xs">
+                        {(() => {
+                          const result = searchResults.agent[searchResultIndices.agent];
                           const startLineNumber = result.line_number - result.context_before.length;
                           let currentLineNumber = startLineNumber;
                           
