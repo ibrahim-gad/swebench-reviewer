@@ -168,32 +168,71 @@ export default function ReportCheckerPage() {
     return false;
   };
 
+  // Helper function to get test-specific violation details
+  const getTestSpecificViolationDetails = (testName: string, testType: "f2p" | "p2p") => {
+    const testStatus = getTestStatus(testName, testType);
+    if (!testStatus) return [];
+
+    const violations: string[] = [];
+
+    // Check for missing or failed tests in after log
+    if (testStatus.after === "missing") {
+      violations.push("Test is missing in after log");
+    } else if (testStatus.after === "failed") {
+      violations.push("Test failed in after log");
+    }
+
+    // Check for F2P tests passing in before log (should fail in before)
+    // if (testType === "f2p" && testStatus.before === "passed") {
+    //   violations.push("F2P test is passing in before log - F2P tests should fail before the fix and pass after");
+    // }
+
+    return violations;
+  };
+
+  // Helper function to check for additional test-specific violations
+  const hasTestSpecificViolations = (testName: string, testType: "f2p" | "p2p") => {
+    return getTestSpecificViolationDetails(testName, testType).length > 0;
+  };
+
+  // Combined function to check for any violations
+  const hasAnyViolations = (testName: string, testType: "f2p" | "p2p") => {
+    return hasRuleViolations(testName) || hasTestSpecificViolations(testName, testType);
+  };
+
   // Helper function to get specific error messages for a test
   const getTestErrorMessages = (testName: string): string[] => {
     if (!analysisResult) return [];
     
     const ruleChecks = analysisResult.rule_checks;
-    if (!ruleChecks) return [];
-    
     const errorMessages: string[] = [];
-    const errorMessageMap: { [key: string]: string } = {
-      "c1_failed_in_base_present_in_P2P": "At least one failed test in base log is present in P2P",
-      "c2_failed_in_after_present_in_F2P_or_P2P": "At least one failed test in after log is present in F2P / P2P",
-      "c3_F2P_success_in_before": "At least one F2P test is present and successful in before log",
-      "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is found but failing in before or is missing from base and before",
-      "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)"
-    };
     
-    // Check if test appears in any rule violation examples
-    for (const ruleKey of Object.keys(ruleChecks)) {
-      const rule = ruleChecks[ruleKey];
-      if (rule.has_problem && rule.examples && rule.examples.includes(testName)) {
-        const errorMessage = errorMessageMap[ruleKey];
-        if (errorMessage) {
-          errorMessages.push(errorMessage);
+    // Check for rule violations
+    if (ruleChecks) {
+      const errorMessageMap: { [key: string]: string } = {
+        "c1_failed_in_base_present_in_P2P": "At least one failed test in base log is present in P2P",
+        "c2_failed_in_after_present_in_F2P_or_P2P": "At least one failed test in after log is present in F2P / P2P",
+        "c3_F2P_success_in_before": "At least one F2P test is present and successful in before log",
+        "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is found but failing in before or is missing from base and before",
+        "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)"
+      };
+      
+      // Check if test appears in any rule violation examples
+      for (const ruleKey of Object.keys(ruleChecks)) {
+        const rule = ruleChecks[ruleKey];
+        if (rule.has_problem && rule.examples && rule.examples.includes(testName)) {
+          const errorMessage = errorMessageMap[ruleKey];
+          if (errorMessage) {
+            errorMessages.push(errorMessage);
+          }
         }
       }
     }
+    
+    // Check for test-specific violations using the shared helper
+    const testType = currentSelection === "fail_to_pass" ? "f2p" : "p2p";
+    const testSpecificViolations = getTestSpecificViolationDetails(testName, testType);
+    errorMessages.push(...testSpecificViolations);
     
     return errorMessages;
   };
@@ -240,8 +279,8 @@ export default function ReportCheckerPage() {
   const filteredFailToPassTests = failToPassTests
     .filter(test => test.toLowerCase().includes(failToPassFilter.toLowerCase()))
     .sort((a, b) => {
-      const aHasError = hasRuleViolations(a);
-      const bHasError = hasRuleViolations(b);
+      const aHasError = hasAnyViolations(a, "f2p");
+      const bHasError = hasAnyViolations(b, "f2p");
       if (aHasError && !bHasError) return -1;
       if (!aHasError && bHasError) return 1;
       return a.localeCompare(b);
@@ -250,8 +289,8 @@ export default function ReportCheckerPage() {
   const filteredPassToPassTests = passToPassTests
     .filter(test => test.toLowerCase().includes(passToPassFilter.toLowerCase()))
     .sort((a, b) => {
-      const aHasError = hasRuleViolations(a);
-      const bHasError = hasRuleViolations(b);
+      const aHasError = hasAnyViolations(a, "p2p");
+      const bHasError = hasAnyViolations(b, "p2p");
       if (aHasError && !bHasError) return -1;
       if (!aHasError && bHasError) return 1;
       return a.localeCompare(b);
@@ -1115,7 +1154,8 @@ export default function ReportCheckerPage() {
   const inputTabs = getInputTabs();
 
   const handleSubmit = async () => {
-    if (!deliverableLink.trim()) {
+    const trimmedLink = deliverableLink.trim();
+    if (!trimmedLink) {
       setError("Please enter a deliverable link");
       return;
     }
@@ -1128,7 +1168,7 @@ export default function ReportCheckerPage() {
       // Stage 1: Validating
       setCurrentStage("validating");
       updateStageStatus("validating", "active");
-      const validationData = await invoke("validate_deliverable", { folderLink: deliverableLink }) as ValidationResult;
+      const validationData = await invoke("validate_deliverable", { folderLink: trimmedLink }) as ValidationResult;
       updateStageStatus("validating", "completed");
 
       // Stage 2: Downloading
@@ -1464,7 +1504,7 @@ export default function ReportCheckerPage() {
                       ) : (
                         filteredFailToPassTests.map((test, index) => {
                           const testStatus = getTestStatus(test, "f2p");
-                          const hasError = hasRuleViolations(test);
+                          const hasError = hasAnyViolations(test, "f2p");
                           
                           return (
                             <div
@@ -1534,7 +1574,7 @@ export default function ReportCheckerPage() {
                       ) : (
                         filteredPassToPassTests.map((test, index) => {
                           const testStatus = getTestStatus(test, "p2p");
-                          const hasError = hasRuleViolations(test);
+                          const hasError = hasAnyViolations(test, "p2p");
                           
                           return (
                             <div
