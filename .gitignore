@@ -22,3 +22,10 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+*_test/
+test_*/
+*_test.rs
+test_*.rs
+test-*.js
+*.py

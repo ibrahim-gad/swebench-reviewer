@@ -149,7 +149,8 @@ export default function ReportCheckerPage() {
       base: analysis.base || "missing",
       before: analysis.before || "missing", 
       after: analysis.after || "missing",
-      agent: analysis.agent || "missing"
+      agent: analysis.agent || "missing",
+      report: analysis.report || "missing"
     };
   };
 
@@ -217,7 +218,8 @@ export default function ReportCheckerPage() {
         "c2_failed_in_after_present_in_F2P_or_P2P": "At least one failed test in after log is present in F2P / P2P",
         "c3_F2P_success_in_before": "At least one F2P test is present and successful in before log",
         "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is found but failing in before or is missing from base and before",
-        "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)"
+        "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)",
+        "c6_test_marked_failed_in_report_but_passing_in_agent": "Test marked as failed in report.json but passing in agent log"
       };
       
       // Check if test appears in any rule violation examples
@@ -1540,6 +1542,7 @@ export default function ReportCheckerPage() {
                                     {renderStatusIcon(testStatus.before)}
                                     {renderStatusIcon(testStatus.after)}
                                     {renderStatusIcon(testStatus.agent)}
+                                    {renderStatusIcon(testStatus.report)}
                                   </>
                                 )}
                                 {hasError && (
@@ -1611,6 +1614,7 @@ export default function ReportCheckerPage() {
                                     {renderStatusIcon(testStatus.before)}
                                     {renderStatusIcon(testStatus.after)}
                                     {renderStatusIcon(testStatus.agent)}
+                                    {renderStatusIcon(testStatus.report)}
                                   </>
                                 )}
                                 {hasError && (

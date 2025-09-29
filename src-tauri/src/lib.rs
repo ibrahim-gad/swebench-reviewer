@@ -5,6 +5,12 @@ mod settings;
 mod report_checker;
 mod analysis;
 
+#[cfg(test)]
+mod analysis_test;
+
+#[cfg(test)]
+mod c6_test;
+
 // Re-export commonly used types
 pub use auth::GoogleTokens;
 pub use report_checker::{FileInfo, ValidationResult, DownloadResult};

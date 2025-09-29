@@ -715,6 +715,30 @@ pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, 
         None
     };
     
+    // Find and parse report.json if available
+    let report_json_path = file_paths.iter().find(|path| path.to_lowercase().contains("results/report.json") || path.to_lowercase().ends_with("report.json"));
+    let report_data = if let Some(report_path) = report_json_path {
+        println!("Found report.json at: {}", report_path);
+        match fs::read_to_string(report_path) {
+            Ok(content) => {
+                match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(json) => Some(json),
+                    Err(e) => {
+                        println!("Failed to parse report.json: {}", e);
+                        None
+                    }
+                }
+            },
+            Err(e) => {
+                println!("Failed to read report.json: {}", e);
+                None
+            }
+        }
+    } else {
+        println!("No report.json found in file paths");
+        None
+    };
+    
     // Generate analysis result similar to swebench-log-analyzer-rust
     let analysis_result = generate_analysis_result(
         &base_parsed,
@@ -726,7 +750,8 @@ pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, 
         base_log.unwrap(),
         before_log.unwrap(),
         after_log.unwrap(),
-        agent_log
+        agent_log,
+        report_data.as_ref()
     );
     
     Ok(analysis_result)
@@ -1695,6 +1720,104 @@ fn status_lookup(names: &[String], parsed: &ParsedLog) -> std::collections::Hash
     out
 }
 
+fn report_status_lookup(names: &[String], report_data: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut report_failed_tests = std::collections::HashSet::new();
+    let mut report_passed_tests = std::collections::HashSet::new();
+    
+    // Parse report.json to extract test results using the same logic as C6 check
+    // Try different possible structures for report.json
+    if let Some(results_array) = report_data.get("results").and_then(|r| r.as_array()) {
+        for result in results_array {
+            if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                match status.to_lowercase().as_str() {
+                    "failed" | "fail" => { report_failed_tests.insert(test_name.to_string()); }
+                    "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.to_string()); }
+                    _ => {}
+                }
+            }
+        }
+    } else if let Some(test_results) = report_data.get("test_results").and_then(|r| r.as_array()) {
+        for result in test_results {
+            if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                match status.to_lowercase().as_str() {
+                    "failed" | "fail" => { report_failed_tests.insert(test_name.to_string()); }
+                    "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.to_string()); }
+                    _ => {}
+                }
+            }
+        }
+    } else if let Some(tests_obj) = report_data.get("tests").and_then(|t| t.as_object()) {
+        // Format: {"tests": {"test_name": {"status": "failed"}}}
+        for (test_name, test_data) in tests_obj {
+            if let Some(status) = test_data.get("status").and_then(|s| s.as_str()) {
+                match status.to_lowercase().as_str() {
+                    "failed" | "fail" => { report_failed_tests.insert(test_name.clone()); }
+                    "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.clone()); }
+                    _ => {}
+                }
+            }
+        }
+    } else if let Some(obj) = report_data.as_object() {
+        // Check for SWE-bench format first
+        let mut found_swe_format = false;
+        for (_key, value) in obj {
+            if let Some(tests_status) = value.get("tests_status").and_then(|t| t.as_object()) {
+                found_swe_format = true;
+                
+                // Parse all test categories
+                for (_category, category_data) in tests_status {
+                    if let Some(category_obj) = category_data.as_object() {
+                        // Extract failed tests from "failure" arrays
+                        if let Some(failure_array) = category_obj.get("failure").and_then(|f| f.as_array()) {
+                            for test_item in failure_array {
+                                if let Some(test_name) = test_item.as_str() {
+                                    report_failed_tests.insert(test_name.to_string());
+                                }
+                            }
+                        }
+                        // Extract passed tests from "success" arrays
+                        if let Some(success_array) = category_obj.get("success").and_then(|f| f.as_array()) {
+                            for test_item in success_array {
+                                if let Some(test_name) = test_item.as_str() {
+                                    report_passed_tests.insert(test_name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                break; // Found SWE-bench format, no need to check other keys
+            }
+        }
+        
+        // If not SWE-bench format, try direct mapping format: {"test_name": "status"}
+        if !found_swe_format {
+            for (test_name, status_val) in obj {
+                if let Some(status) = status_val.as_str() {
+                    match status.to_lowercase().as_str() {
+                        "failed" | "fail" => { report_failed_tests.insert(test_name.clone()); }
+                        "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.clone()); }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    // Map test names to their status
+    for name in names {
+        if report_failed_tests.contains(name) {
+            out.insert(name.clone(), "failed".to_string());
+        } else if report_passed_tests.contains(name) {
+            out.insert(name.clone(), "passed".to_string());
+        } else {
+            out.insert(name.clone(), "missing".to_string());
+        }
+    }
+    
+    out
+}
+
 fn generate_analysis_result(
     base_parsed: &ParsedLog,
     before_parsed: &ParsedLog,
@@ -1706,6 +1829,7 @@ fn generate_analysis_result(
     before_path: &str,
     after_path: &str,
     agent_path: Option<&String>,
+    report_data: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let universe: Vec<String> = pass_to_pass.iter().chain(fail_to_pass.iter()).cloned().collect();
     
@@ -1714,6 +1838,13 @@ fn generate_analysis_result(
     let after_s = status_lookup(&universe, after_parsed);
     let agent_s = if let Some(agent_parsed) = agent_parsed {
         status_lookup(&universe, agent_parsed)
+    } else {
+        std::collections::HashMap::new()
+    };
+    
+    // Parse report.json status if available
+    let report_s = if let Some(report_data) = report_data {
+        report_status_lookup(&universe, report_data)
     } else {
         std::collections::HashMap::new()
     };
@@ -1777,6 +1908,100 @@ fn generate_analysis_result(
     }
     let c5 = !dup_map.is_empty();
     
+    // C6: Test marked as failing in report.json but passing in post_agent_log
+    // This checks for inconsistencies between report.json and agent log results
+    let mut c6_hits: Vec<String> = vec![];
+    let c6 = if let (Some(_agent_parsed), Some(report_data)) = (agent_parsed, report_data) {
+        println!("Performing C6 check: comparing report.json with agent log results");
+        
+        // Parse report.json to extract test results
+        // Common formats: results array, test_results array, direct test mapping, or SWE-bench format
+        let mut report_failed_tests = std::collections::HashSet::new();
+        
+        // Try different possible structures for report.json
+        if let Some(results_array) = report_data.get("results").and_then(|r| r.as_array()) {
+            for result in results_array {
+                if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                    if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                        report_failed_tests.insert(test_name.to_string());
+                    }
+                }
+            }
+        } else if let Some(test_results) = report_data.get("test_results").and_then(|r| r.as_array()) {
+            for result in test_results {
+                if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                    if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                        report_failed_tests.insert(test_name.to_string());
+                    }
+                }
+            }
+        } else if let Some(tests_obj) = report_data.get("tests").and_then(|t| t.as_object()) {
+            // Format: {"tests": {"test_name": {"status": "failed"}}}
+            for (test_name, test_data) in tests_obj {
+                if let Some(status) = test_data.get("status").and_then(|s| s.as_str()) {
+                    if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                        report_failed_tests.insert(test_name.clone());
+                    }
+                }
+            }
+        } else if let Some(obj) = report_data.as_object() {
+            // Check for SWE-bench format first
+            let mut found_swe_format = false;
+            for (key, value) in obj {
+                if let Some(tests_status) = value.get("tests_status").and_then(|t| t.as_object()) {
+                    println!("Found SWE-bench format report.json for key: {}", key);
+                    found_swe_format = true;
+                    
+                    // Parse all test categories that indicate failure
+                    for (category, category_data) in tests_status {
+                        if let Some(category_obj) = category_data.as_object() {
+                            // Extract failed tests from "failure" arrays in all categories
+                            if let Some(failure_array) = category_obj.get("failure").and_then(|f| f.as_array()) {
+                                for test_item in failure_array {
+                                    if let Some(test_name) = test_item.as_str() {
+                                        report_failed_tests.insert(test_name.to_string());
+                                        println!("Found failed test in category {}: {}", category, test_name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break; // Found SWE-bench format, no need to check other keys
+                }
+            }
+            
+            // If not SWE-bench format, try direct mapping format: {"test_name": "status"}
+            if !found_swe_format {
+                for (test_name, status_val) in obj {
+                    if let Some(status) = status_val.as_str() {
+                        if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                            report_failed_tests.insert(test_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("Found {} failed tests in report.json", report_failed_tests.len());
+        
+        // Check F2P and P2P tests for inconsistencies
+        for test_name in &universe {
+            if report_failed_tests.contains(test_name) {
+                // Test is marked as failed in report.json
+                if agent_s.get(test_name) == Some(&"passed".to_string()) {
+                    // But it's passing in agent log - this is an inconsistency!
+                    c6_hits.push(format!("{} (marked as failed in report.json but passing in agent log)", test_name));
+                }
+            }
+        }
+        
+        println!("C6 check found {} inconsistencies", c6_hits.len());
+        !c6_hits.is_empty()
+    } else {
+        println!("C6 check skipped: missing agent log or report.json");
+        false
+    };
+    
     // P2P rejection logic
     let p2p_ignored: Vec<String> = pass_to_pass.iter()
         .filter(|t| base_s.get(*t) == Some(&"passed".to_string()) && after_s.get(*t) == Some(&"passed".to_string()))
@@ -1828,6 +2053,7 @@ fn generate_analysis_result(
         test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("agent".to_string(), serde_json::Value::String(agent_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("report".to_string(), serde_json::Value::String(report_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         p2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
     }
     
@@ -1839,6 +2065,7 @@ fn generate_analysis_result(
         test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("agent".to_string(), serde_json::Value::String(agent_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("report".to_string(), serde_json::Value::String(report_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         f2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
     }
     
@@ -1907,6 +2134,10 @@ fn generate_analysis_result(
             "c5_duplicates_in_same_log_for_F2P_or_P2P": {
                 "has_problem": c5,
                 "duplicate_examples_per_log": serde_json::Value::Object(dup_map)
+            },
+            "c6_test_marked_failed_in_report_but_passing_in_agent": {
+                "has_problem": c6,
+                "examples": c6_hits
             },
         },
         "rejection_reason": {
