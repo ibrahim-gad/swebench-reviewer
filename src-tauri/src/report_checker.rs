@@ -127,6 +127,15 @@ pub async fn validate_deliverable(folder_link: String) -> Result<ValidationResul
     
     println!("Results folder found: {}", results_folder.is_some());
 
+    // Rule 6: Check for patches folder (optional, but if present, we'll use it)
+    let patches_folder = files.iter().find(|file| {
+        let file_name = file["name"].as_str().unwrap_or("").to_lowercase();
+        file_name == "patches" &&
+        file["mimeType"].as_str() == Some("application/vnd.google-apps.folder")
+    });
+    
+    println!("Patches folder found: {}", patches_folder.is_some());
+
     // Get logs folder contents
     let mut logs_contents = get_folder_contents(logs_folder_id, &access_token).await;
     if logs_contents.is_err() {
@@ -231,6 +240,49 @@ pub async fn validate_deliverable(folder_link: String) -> Result<ValidationResul
         }
     } else {
         println!("No results folder found in the deliverable");
+    }
+
+    // 4. Add diff files from patches folder if it exists
+    if let Some(patches_folder) = patches_folder {
+        println!("Found patches folder, attempting to get contents...");
+        let patches_folder_id = patches_folder["id"].as_str().unwrap_or("");
+        
+        // Get patches folder contents
+        let mut patches_contents = get_folder_contents(patches_folder_id, &access_token).await;
+        if patches_contents.is_err() {
+            println!("First attempt to get patches folder contents failed, retrying...");
+            patches_contents = get_folder_contents(patches_folder_id, &access_token).await;
+        }
+        
+        if let Ok(patches_contents) = patches_contents {
+            let empty_vec = vec![];
+            let patches_files = patches_contents["files"].as_array().unwrap_or(&empty_vec);
+            println!("Found {} files in patches folder", patches_files.len());
+            
+            // Debug: List all files in patches folder
+            for file in patches_files {
+                let file_name = file["name"].as_str().unwrap_or("unknown");
+                println!("Patches folder file: {}", file_name);
+            }
+            
+            // Look for diff files (typically .diff or .patch extensions)
+            for diff_file in patches_files.iter().filter(|file| {
+                let file_name = file["name"].as_str().unwrap_or("").to_lowercase();
+                (file_name.ends_with(".diff") || file_name.ends_with(".patch")) &&
+                file["mimeType"].as_str() != Some("application/vnd.google-apps.folder")
+            }) {
+                println!("Found diff file: {}, adding to download list", diff_file["name"].as_str().unwrap_or(""));
+                files_to_download.push(FileInfo {
+                    id: diff_file["id"].as_str().unwrap_or("").to_string(),
+                    name: diff_file["name"].as_str().unwrap_or("").to_string(),
+                    path: format!("patches/{}", diff_file["name"].as_str().unwrap_or("")),
+                });
+            }
+        } else {
+            println!("Failed to get patches folder contents: {:?}", patches_contents.err());
+        }
+    } else {
+        println!("No patches folder found in the deliverable");
     }
     
     

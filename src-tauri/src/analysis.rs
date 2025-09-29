@@ -751,7 +751,8 @@ pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, 
         before_log.unwrap(),
         after_log.unwrap(),
         agent_log,
-        report_data.as_ref()
+        report_data.as_ref(),
+        &file_paths
     );
     
     Ok(analysis_result)
@@ -1830,6 +1831,7 @@ fn generate_analysis_result(
     after_path: &str,
     agent_path: Option<&String>,
     report_data: Option<&serde_json::Value>,
+    file_paths: &[String],
 ) -> serde_json::Value {
     let universe: Vec<String> = pass_to_pass.iter().chain(fail_to_pass.iter()).cloned().collect();
     
@@ -1911,6 +1913,57 @@ fn generate_analysis_result(
     // C6: Test marked as failing in report.json but passing in post_agent_log
     // This checks for inconsistencies between report.json and agent log results
     let mut c6_hits: Vec<String> = vec![];
+    // C7: F2P tests found in golden source diff files
+    let mut c7_hits: Vec<String> = vec![];
+    let c7 = {
+        println!("Performing C7 check: looking for F2P tests in golden source diff files");
+        
+        // Find diff/patch files from patches folder
+        let diff_files: Vec<&String> = file_paths.iter()
+            .filter(|path| {
+                let path_lower = path.to_lowercase();
+                path_lower.contains("patches/") && (path_lower.ends_with(".diff") || path_lower.ends_with(".patch"))
+            })
+            .collect();
+        
+        println!("Found {} diff/patch files", diff_files.len());
+        
+        if !diff_files.is_empty() {
+            for diff_file in &diff_files {
+                println!("Checking diff file: {}", diff_file);
+                
+                // Read the diff file content
+                if let Ok(diff_content) = fs::read_to_string(diff_file) {
+                    println!("Read diff file successfully, {} bytes", diff_content.len());
+                    
+                    // Check if any F2P test names appear in this diff file
+                    for f2p_test in fail_to_pass {
+                        // Extract the actual test name from module path (e.g., "tests::test_example" -> "test_example")
+                        let test_name_to_search = if f2p_test.contains("::") {
+                            f2p_test.split("::").last().unwrap_or(f2p_test)
+                        } else {
+                            f2p_test
+                        };
+                        
+                        if diff_content.contains(test_name_to_search) {
+                            let violation = format!("{} (found as '{}' in {})", f2p_test, test_name_to_search, diff_file.split('/').last().unwrap_or(diff_file));
+                            c7_hits.push(violation);
+                            println!("C7 violation: F2P test '{}' found as '{}' in diff file '{}'", f2p_test, test_name_to_search, diff_file);
+                        }
+                    }
+                } else {
+                    println!("Failed to read diff file: {}", diff_file);
+                }
+            }
+        } else {
+            println!("No diff/patch files found in patches folder");
+        }
+        
+        let has_violations = !c7_hits.is_empty();
+        println!("C7 check completed: {} violations found", c7_hits.len());
+        has_violations
+    };
+
     let c6 = if let (Some(_agent_parsed), Some(report_data)) = (agent_parsed, report_data) {
         println!("Performing C6 check: comparing report.json with agent log results");
         
@@ -2138,6 +2191,10 @@ fn generate_analysis_result(
             "c6_test_marked_failed_in_report_but_passing_in_agent": {
                 "has_problem": c6,
                 "examples": c6_hits
+            },
+            "c7_f2p_tests_in_golden_source_diff": {
+                "has_problem": c7,
+                "examples": c7_hits
             },
         },
         "rejection_reason": {

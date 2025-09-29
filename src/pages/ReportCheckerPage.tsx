@@ -164,8 +164,16 @@ export default function ReportCheckerPage() {
     // Check if test appears in any rule violation examples
     for (const ruleKey of Object.keys(ruleChecks)) {
       const rule = ruleChecks[ruleKey];
-      if (rule.has_problem && rule.examples && rule.examples.includes(testName)) {
-        return true;
+      if (rule.has_problem && rule.examples) {
+        // For C7 and potentially other rules, examples may contain formatted strings
+        // Check if testName appears in any example (exact match or as part of formatted string)
+        const isViolated = rule.examples.some((example: string) => {
+          return example === testName || example.includes(testName);
+        });
+        
+        if (isViolated) {
+          return true;
+        }
       }
     }
     
@@ -219,16 +227,25 @@ export default function ReportCheckerPage() {
         "c3_F2P_success_in_before": "At least one F2P test is present and successful in before log",
         "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is found but failing in before or is missing from base and before",
         "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)",
-        "c6_test_marked_failed_in_report_but_passing_in_agent": "Test marked as failed in report.json but passing in agent log"
+        "c6_test_marked_failed_in_report_but_passing_in_agent": "Test marked as failed in report.json but passing in agent log",
+        "c7_f2p_tests_in_golden_source_diff": "At least one F2P test name found in golden source diff files"
       };
       
       // Check if test appears in any rule violation examples
       for (const ruleKey of Object.keys(ruleChecks)) {
         const rule = ruleChecks[ruleKey];
-        if (rule.has_problem && rule.examples && rule.examples.includes(testName)) {
-          const errorMessage = errorMessageMap[ruleKey];
-          if (errorMessage) {
-            errorMessages.push(errorMessage);
+        if (rule.has_problem && rule.examples) {
+          // For C7 and potentially other rules, examples may contain formatted strings
+          // Check if testName appears in any example (exact match or as part of formatted string)
+          const isViolated = rule.examples.some((example: string) => {
+            return example === testName || example.includes(testName);
+          });
+          
+          if (isViolated) {
+            const errorMessage = errorMessageMap[ruleKey];
+            if (errorMessage) {
+              errorMessages.push(errorMessage);
+            }
           }
         }
       }
@@ -1519,10 +1536,12 @@ export default function ReportCheckerPage() {
                               key={index}
                               id={`fail_to_pass-item-${index}`}
                               className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex items-center ${
-                                currentSelection === "fail_to_pass" && selectedFailToPassIndex === index
-                                  ? "bg-blue-100 dark:bg-blue-900/50 text-blue-900 dark:text-blue-100"
-                                  : hasError
-                                    ? "bg-red-50 dark:bg-red-900/20 text-gray-700 dark:text-gray-300 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                hasError
+                                  ? currentSelection === "fail_to_pass" && selectedFailToPassIndex === index
+                                    ? "bg-red-100 dark:bg-red-900/40 text-red-900 dark:text-red-100 border-l-4 border-red-500"
+                                    : "bg-red-50 dark:bg-red-900/20 text-gray-700 dark:text-gray-300 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                  : currentSelection === "fail_to_pass" && selectedFailToPassIndex === index
+                                    ? "bg-blue-100 dark:bg-blue-900/50 text-blue-900 dark:text-blue-100"
                                     : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
                               }`}
                               onClick={() => {
@@ -1591,10 +1610,12 @@ export default function ReportCheckerPage() {
                               key={index}
                               id={`pass_to_pass-item-${index}`}
                               className={`px-4 py-1 text-sm border-b border-gray-100 dark:border-gray-600 cursor-pointer flex items-center ${
-                                currentSelection === "pass_to_pass" && selectedPassToPassIndex === index
-                                  ? "bg-green-100 dark:bg-green-900/50 text-green-900 dark:text-green-100"
-                                  : hasError
-                                    ? "bg-red-50 dark:bg-red-900/20 text-gray-700 dark:text-gray-300 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                hasError
+                                  ? currentSelection === "pass_to_pass" && selectedPassToPassIndex === index
+                                    ? "bg-red-100 dark:bg-red-900/40 text-red-900 dark:text-red-100 border-l-4 border-red-500"
+                                    : "bg-red-50 dark:bg-red-900/20 text-gray-700 dark:text-gray-300 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                  : currentSelection === "pass_to_pass" && selectedPassToPassIndex === index
+                                    ? "bg-green-100 dark:bg-green-900/50 text-green-900 dark:text-green-100"
                                     : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
                               }`}
                               onClick={() => {
