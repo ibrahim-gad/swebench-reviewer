@@ -1913,10 +1913,10 @@ fn generate_analysis_result(
     // C6: Test marked as failing in report.json but passing in post_agent_log
     // This checks for inconsistencies between report.json and agent log results
     let mut c6_hits: Vec<String> = vec![];
-    // C7: F2P tests found in golden source diff files
+    // C7: F2P tests found in golden source diff files but not in test diff files
     let mut c7_hits: Vec<String> = vec![];
     let c7 = {
-        println!("Performing C7 check: looking for F2P tests in golden source diff files");
+        println!("Performing C7 check: looking for F2P tests in golden source diff files (but not in test diffs)");
         
         // Find diff/patch files from patches folder
         let diff_files: Vec<&String> = file_paths.iter()
@@ -1929,14 +1929,37 @@ fn generate_analysis_result(
         println!("Found {} diff/patch files", diff_files.len());
         
         if !diff_files.is_empty() {
-            for diff_file in &diff_files {
-                println!("Checking diff file: {}", diff_file);
+            // Separate golden source diffs from test diffs
+            let (golden_source_diffs, test_diffs): (Vec<&String>, Vec<&String>) = diff_files.iter()
+                .partition(|path| {
+                    let filename = path.split('/').last().unwrap_or("").to_lowercase();
+                    // Golden source diffs typically contain "gold", "golden", "src", "source"
+                    // Test diffs typically contain "test"
+                    (filename.contains("gold") || filename.contains("src") || filename.contains("source")) &&
+                    !filename.contains("test")
+                });
+            
+            println!("Found {} golden source diff files and {} test diff files", 
+                     golden_source_diffs.len(), test_diffs.len());
+            
+            // Read all test diff contents to check if tests appear there
+            let mut test_diff_contents = String::new();
+            for test_diff in &test_diffs {
+                if let Ok(content) = fs::read_to_string(test_diff) {
+                    test_diff_contents.push_str(&content);
+                    test_diff_contents.push('\n');
+                    println!("Read test diff file: {}", test_diff);
+                }
+            }
+            
+            // Check golden source diffs for F2P tests
+            for golden_diff in &golden_source_diffs {
+                println!("Checking golden source diff file: {}", golden_diff);
                 
-                // Read the diff file content
-                if let Ok(diff_content) = fs::read_to_string(diff_file) {
-                    println!("Read diff file successfully, {} bytes", diff_content.len());
+                if let Ok(diff_content) = fs::read_to_string(golden_diff) {
+                    println!("Read golden source diff successfully, {} bytes", diff_content.len());
                     
-                    // Check if any F2P test names appear in this diff file
+                    // Check if any F2P test names appear in this golden source diff
                     for f2p_test in fail_to_pass {
                         // Extract the actual test name from module path (e.g., "tests::test_example" -> "test_example")
                         let test_name_to_search = if f2p_test.contains("::") {
@@ -1946,13 +1969,21 @@ fn generate_analysis_result(
                         };
                         
                         if diff_content.contains(test_name_to_search) {
-                            let violation = format!("{} (found as '{}' in {})", f2p_test, test_name_to_search, diff_file.split('/').last().unwrap_or(diff_file));
-                            c7_hits.push(violation);
-                            println!("C7 violation: F2P test '{}' found as '{}' in diff file '{}'", f2p_test, test_name_to_search, diff_file);
+                            // Check if this test also appears in test diffs
+                            if !test_diff_contents.is_empty() && test_diff_contents.contains(test_name_to_search) {
+                                println!("F2P test '{}' found in both golden source and test diffs - not a violation", f2p_test);
+                            } else {
+                                let violation = format!("{} (found as '{}' in {} but not in test diffs)", 
+                                                      f2p_test, test_name_to_search, 
+                                                      golden_diff.split('/').last().unwrap_or(golden_diff));
+                                c7_hits.push(violation);
+                                println!("C7 violation: F2P test '{}' found as '{}' in golden source diff '{}' but not in test diffs", 
+                                         f2p_test, test_name_to_search, golden_diff);
+                            }
                         }
                     }
                 } else {
-                    println!("Failed to read diff file: {}", diff_file);
+                    println!("Failed to read golden source diff file: {}", golden_diff);
                 }
             }
         } else {

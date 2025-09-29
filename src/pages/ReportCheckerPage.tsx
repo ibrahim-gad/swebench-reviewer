@@ -155,7 +155,7 @@ export default function ReportCheckerPage() {
   };
 
   // Helper function to check if test has rule violations
-  const hasRuleViolations = (testName: string) => {
+  const hasRuleViolations = (testName: string, testType: "f2p" | "p2p") => {
     if (!analysisResult) return false;
     
     const ruleChecks = analysisResult.rule_checks;
@@ -165,6 +165,11 @@ export default function ReportCheckerPage() {
     for (const ruleKey of Object.keys(ruleChecks)) {
       const rule = ruleChecks[ruleKey];
       if (rule.has_problem && rule.examples) {
+        // C7 rule should only apply to F2P tests
+        if (ruleKey === "c7_f2p_tests_in_golden_source_diff" && testType !== "f2p") {
+          continue; // Skip C7 for P2P tests
+        }
+        
         // For C7 and potentially other rules, examples may contain formatted strings
         // Check if testName appears in any example (exact match or as part of formatted string)
         const isViolated = rule.examples.some((example: string) => {
@@ -209,7 +214,7 @@ export default function ReportCheckerPage() {
 
   // Combined function to check for any violations
   const hasAnyViolations = (testName: string, testType: "f2p" | "p2p") => {
-    return hasRuleViolations(testName) || hasTestSpecificViolations(testName, testType);
+    return hasRuleViolations(testName, testType) || hasTestSpecificViolations(testName, testType);
   };
 
   // Helper function to get specific error messages for a test
