@@ -1871,21 +1871,27 @@ fn generate_analysis_result(
         .collect();
     let c3 = !c3_hits.is_empty();
     
-    // C4: Report *violations* of the valid P2P pattern:
-    //  base: missing AND (before: failed OR missing) AND after: passed
-    // We mark problem when test violates the above (meets first part(s) but fails after, or passes in before).
+    // C4: P2P tests that are missing in base and not passing in before
+    // Logic:
+    // - If P2P passed in base → Skip (don't check)
+    // - If P2P is missing in base → Check before:
+    //   - If passing in before → No violation
+    //   - If missing or failed in before → Violation
     let mut c4_hits: Vec<String> = vec![];
     for t in pass_to_pass {
         let b = base_s.get(t).map(String::as_str).unwrap_or("missing");
         let be = before_s.get(t).map(String::as_str).unwrap_or("missing");
-        let a = after_s.get(t).map(String::as_str).unwrap_or("missing");
+        
+        // If P2P passed in base, skip this test (no need to check before)
+        if b == "passed" {
+            continue;
+        }
+        
+        // If P2P is missing in base, check it in before
         if b == "missing" {
-            let before_ok = be == "failed" || be == "missing";
-            let after_ok = a == "passed";
-            if before_ok && !after_ok {
-                c4_hits.push(format!("{t} (missing in base, {be} in before, but {a} in after)"));
-            } else if !before_ok {
-                c4_hits.push(format!("{t} (missing in base but {be} in before - violates C4 pattern)"));
+            // If P2P is NOT passing in before (missing or failed), it's a violation
+            if be != "passed" {
+                c4_hits.push(format!("{t} (missing in base, {be} in before)"));
             }
         }
     }
