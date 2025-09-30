@@ -69,7 +69,19 @@ Verify installation:
 pnpm --version
 ```
 
-### 4. Build the Project
+### 4. Install tauri
+
+```bash
+cargo install tauri-cli
+```
+
+Verify installation:
+
+```bash
+cargo tauri --version
+```
+
+### 5. Build the Project
 
 1. **Clone and navigate to the project directory**:
    ```bash
@@ -92,7 +104,7 @@ pnpm --version
    - Build the React frontend
    - Package everything into a distributable binary
 
-### 5. Run the Application
+### 6. Run the Application
 
 After a successful build, you can find the binary at:
 
