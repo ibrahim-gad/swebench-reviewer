@@ -1977,15 +1977,36 @@ fn generate_analysis_result(
                         if diff_content.contains(test_name_to_search) {
                             // Check if this test also appears in test diffs as an actual test function
                             let found_exact_test_in_test_diffs = if !test_diff_contents.is_empty() {
-                                // Look for exact test function patterns in test diffs
-                                let test_patterns = vec![
-                                    format!("fn {}(", test_name_to_search),
-                                    format!("fn {} (", test_name_to_search),
-                                    format!("#[test]\nfn {}(", test_name_to_search),
-                                    format!("#[test]\nfn {} (", test_name_to_search),
-                                ];
+                                // Normalize line endings to handle CRLF, LF, etc.
+                                let normalized_test_diff = test_diff_contents.replace("\r\n", "\n").replace("\r", "\n");
                                 
-                                test_patterns.iter().any(|pattern| test_diff_contents.contains(pattern))
+                                // Look for exact test function patterns in test diffs
+                                // Use regex-like matching to handle whitespace and line endings flexibly
+                                let found_direct_fn = normalized_test_diff.contains(&format!("fn {}(", test_name_to_search)) ||
+                                                     normalized_test_diff.contains(&format!("fn {} (", test_name_to_search));
+                                
+                                // Look for #[test] attribute followed by the function (with flexible whitespace/newlines)
+                                let found_test_attribute = {
+                                    let lines: Vec<&str> = normalized_test_diff.lines().collect();
+                                    let mut found = false;
+                                    for i in 0..lines.len().saturating_sub(1) {
+                                        if lines[i].trim() == "#[test]" {
+                                            // Check next few lines for the function
+                                            for j in (i + 1)..std::cmp::min(i + 4, lines.len()) {
+                                                let line = lines[j].trim();
+                                                if line.starts_with(&format!("fn {}(", test_name_to_search)) ||
+                                                   line.starts_with(&format!("fn {} (", test_name_to_search)) {
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                            if found { break; }
+                                        }
+                                    }
+                                    found
+                                };
+                                
+                                found_direct_fn || found_test_attribute
                             } else {
                                 false
                             };
