@@ -1975,15 +1975,29 @@ fn generate_analysis_result(
                         };
                         
                         if diff_content.contains(test_name_to_search) {
-                            // Check if this test also appears in test diffs
-                            if !test_diff_contents.is_empty() && test_diff_contents.contains(test_name_to_search) {
-                                println!("F2P test '{}' found in both golden source and test diffs - not a violation", f2p_test);
+                            // Check if this test also appears in test diffs as an actual test function
+                            let found_exact_test_in_test_diffs = if !test_diff_contents.is_empty() {
+                                // Look for exact test function patterns in test diffs
+                                let test_patterns = vec![
+                                    format!("fn {}(", test_name_to_search),
+                                    format!("fn {} (", test_name_to_search),
+                                    format!("#[test]\nfn {}(", test_name_to_search),
+                                    format!("#[test]\nfn {} (", test_name_to_search),
+                                ];
+                                
+                                test_patterns.iter().any(|pattern| test_diff_contents.contains(pattern))
                             } else {
-                                let violation = format!("{} (found as '{}' in {} but not in test diffs)", 
+                                false
+                            };
+                            
+                            if found_exact_test_in_test_diffs {
+                                println!("F2P test '{}' found in both golden source and test diffs as actual test function - not a violation", f2p_test);
+                            } else {
+                                let violation = format!("{} (found as '{}' in {} but not as actual test function in test diffs)", 
                                                       f2p_test, test_name_to_search, 
                                                       golden_diff.split('/').last().unwrap_or(golden_diff));
                                 c7_hits.push(violation);
-                                println!("C7 violation: F2P test '{}' found as '{}' in golden source diff '{}' but not in test diffs", 
+                                println!("C7 violation: F2P test '{}' found as '{}' in golden source diff '{}' but not as actual test function in test diffs", 
                                          f2p_test, test_name_to_search, golden_diff);
                             }
                         }
