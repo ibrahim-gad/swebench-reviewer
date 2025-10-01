@@ -1975,15 +1975,50 @@ fn generate_analysis_result(
                         };
                         
                         if diff_content.contains(test_name_to_search) {
-                            // Check if this test also appears in test diffs
-                            if !test_diff_contents.is_empty() && test_diff_contents.contains(test_name_to_search) {
-                                println!("F2P test '{}' found in both golden source and test diffs - not a violation", f2p_test);
+                            // Check if this test also appears in test diffs as an actual test function
+                            let found_exact_test_in_test_diffs = if !test_diff_contents.is_empty() {
+                                // Normalize line endings to handle CRLF, LF, etc.
+                                let normalized_test_diff = test_diff_contents.replace("\r\n", "\n").replace("\r", "\n");
+                                
+                                // Look for exact test function patterns in test diffs
+                                // Use regex-like matching to handle whitespace and line endings flexibly
+                                let found_direct_fn = normalized_test_diff.contains(&format!("fn {}(", test_name_to_search)) ||
+                                                     normalized_test_diff.contains(&format!("fn {} (", test_name_to_search));
+                                
+                                // Look for #[test] attribute followed by the function (with flexible whitespace/newlines)
+                                let found_test_attribute = {
+                                    let lines: Vec<&str> = normalized_test_diff.lines().collect();
+                                    let mut found = false;
+                                    for i in 0..lines.len().saturating_sub(1) {
+                                        if lines[i].trim() == "#[test]" {
+                                            // Check next few lines for the function
+                                            for j in (i + 1)..std::cmp::min(i + 4, lines.len()) {
+                                                let line = lines[j].trim();
+                                                if line.starts_with(&format!("fn {}(", test_name_to_search)) ||
+                                                   line.starts_with(&format!("fn {} (", test_name_to_search)) {
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                            if found { break; }
+                                        }
+                                    }
+                                    found
+                                };
+                                
+                                found_direct_fn || found_test_attribute
                             } else {
-                                let violation = format!("{} (found as '{}' in {} but not in test diffs)", 
+                                false
+                            };
+                            
+                            if found_exact_test_in_test_diffs {
+                                println!("F2P test '{}' found in both golden source and test diffs as actual test function - not a violation", f2p_test);
+                            } else {
+                                let violation = format!("{} (found as '{}' in {} but not as actual test function in test diffs)", 
                                                       f2p_test, test_name_to_search, 
                                                       golden_diff.split('/').last().unwrap_or(golden_diff));
                                 c7_hits.push(violation);
-                                println!("C7 violation: F2P test '{}' found as '{}' in golden source diff '{}' but not in test diffs", 
+                                println!("C7 violation: F2P test '{}' found as '{}' in golden source diff '{}' but not as actual test function in test diffs", 
                                          f2p_test, test_name_to_search, golden_diff);
                             }
                         }
