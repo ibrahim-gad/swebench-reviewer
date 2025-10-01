@@ -917,10 +917,27 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
             let status = m.as_str().to_lowercase();
             let match_start = m.start();
             
-            // Get context around the match
+            // Get context around the match (safely handle UTF-8 boundaries)
             let context_start = match_start.saturating_sub(50);
             let context_end = std::cmp::min(match_start + 50, window.len());
-            let context = &window[context_start..context_end].to_lowercase();
+            
+            // Optimized single-pass character boundary detection
+            let mut safe_start = None;
+            let mut safe_end = None;
+            for (i, _) in window.char_indices() {
+                if safe_start.is_none() && i >= context_start {
+                    safe_start = Some(i);
+                }
+                if safe_end.is_none() && i >= context_end {
+                    safe_end = Some(i);
+                }
+                if safe_start.is_some() && safe_end.is_some() {
+                    break;
+                }
+            }
+            let safe_start = safe_start.unwrap_or(context_start);
+            let safe_end = safe_end.unwrap_or(context_end);
+            let context = &window[safe_start..safe_end].to_lowercase();
             
             // Enhanced filtering to avoid false positives
             if status == "error" && (
@@ -1471,10 +1488,27 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
             let status = cap.get(1).unwrap().as_str().to_lowercase();
             let match_start = cap.get(0).unwrap().start();
             
-            // Get some context around the match
+            // Get some context around the match (safely handle UTF-8 boundaries)
             let context_start = match_start.saturating_sub(50);
             let context_end = std::cmp::min(match_start + 50, search_text.len());
-            let context = &search_text[context_start..context_end].to_lowercase();
+            
+            // Optimized single-pass character boundary detection
+            let mut safe_start = None;
+            let mut safe_end = None;
+            for (i, _) in search_text.char_indices() {
+                if safe_start.is_none() && i >= context_start {
+                    safe_start = Some(i);
+                }
+                if safe_end.is_none() && i >= context_end {
+                    safe_end = Some(i);
+                }
+                if safe_start.is_some() && safe_end.is_some() {
+                    break;
+                }
+            }
+            let safe_start = safe_start.unwrap_or(context_start);
+            let safe_end = safe_end.unwrap_or(context_end);
+            let context = &search_text[safe_start..safe_end].to_lowercase();
             
             // Enhanced filtering to avoid false positives
             if status == "error" && (
