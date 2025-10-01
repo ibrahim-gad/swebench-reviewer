@@ -566,6 +566,7 @@ pub struct LogSearchResults {
     pub base_results: Vec<SearchResult>,
     pub before_results: Vec<SearchResult>,
     pub after_results: Vec<SearchResult>,
+    pub agent_results: Vec<SearchResult>,
 }
 
 pub fn get_test_lists(file_paths: Vec<String>) -> Result<TestLists, String> {
@@ -618,6 +619,7 @@ pub fn search_logs(file_paths: Vec<String>, test_name: String) -> Result<LogSear
     let base_log = file_paths.iter().find(|path| path.to_lowercase().contains("base.log"));
     let before_log = file_paths.iter().find(|path| path.to_lowercase().contains("before.log"));
     let after_log = file_paths.iter().find(|path| path.to_lowercase().contains("after.log"));
+    let agent_log = file_paths.iter().find(|path| path.to_lowercase().contains("post_agent_patch.log") || path.to_lowercase().contains("agent.log"));
     
     let base_results = if let Some(path) = base_log {
         search_in_log_file(path, &test_name)?
@@ -636,14 +638,21 @@ pub fn search_logs(file_paths: Vec<String>, test_name: String) -> Result<LogSear
     } else {
         Vec::new()
     };
+
+    let agent_results = if let Some(path) = agent_log {
+        search_in_log_file(path, &test_name)?
+    } else {
+        Vec::new()
+    };
     
-    println!("Search results: base={}, before={}, after={}", 
-             base_results.len(), before_results.len(), after_results.len());
+    println!("Search results: base={}, before={}, after={}, agent={}", 
+             base_results.len(), before_results.len(), after_results.len(), agent_results.len());
     
     Ok(LogSearchResults {
         base_results,
         before_results,
         after_results,
+        agent_results,
     })
 }
 
@@ -688,6 +697,7 @@ pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, 
     let base_log = file_paths.iter().find(|path| path.to_lowercase().contains("base.log"));
     let before_log = file_paths.iter().find(|path| path.to_lowercase().contains("before.log"));
     let after_log = file_paths.iter().find(|path| path.to_lowercase().contains("after.log"));
+    let agent_log = file_paths.iter().find(|path| path.to_lowercase().contains("post_agent_patch.log") || path.to_lowercase().contains("agent.log"));
     
     if base_log.is_none() || before_log.is_none() || after_log.is_none() {
         return Err("Missing required log files (base.log, before.log, after.log)".to_string());
@@ -698,16 +708,51 @@ pub async fn analyze_logs(file_paths: Vec<String>) -> Result<serde_json::Value, 
     let before_parsed = parse_rust_log_file(before_log.unwrap())?;
     let after_parsed = parse_rust_log_file(after_log.unwrap())?;
     
+    // Parse agent log if available
+    let agent_parsed = if let Some(agent_path) = agent_log {
+        Some(parse_rust_log_file(agent_path)?)
+    } else {
+        None
+    };
+    
+    // Find and parse report.json if available
+    let report_json_path = file_paths.iter().find(|path| path.to_lowercase().contains("results/report.json") || path.to_lowercase().ends_with("report.json"));
+    let report_data = if let Some(report_path) = report_json_path {
+        println!("Found report.json at: {}", report_path);
+        match fs::read_to_string(report_path) {
+            Ok(content) => {
+                match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(json) => Some(json),
+                    Err(e) => {
+                        println!("Failed to parse report.json: {}", e);
+                        None
+                    }
+                }
+            },
+            Err(e) => {
+                println!("Failed to read report.json: {}", e);
+                None
+            }
+        }
+    } else {
+        println!("No report.json found in file paths");
+        None
+    };
+    
     // Generate analysis result similar to swebench-log-analyzer-rust
     let analysis_result = generate_analysis_result(
         &base_parsed,
         &before_parsed, 
         &after_parsed,
+        agent_parsed.as_ref(),
         &pass_to_pass,
         &fail_to_pass,
         base_log.unwrap(),
         before_log.unwrap(),
-        after_log.unwrap()
+        after_log.unwrap(),
+        agent_log,
+        report_data.as_ref(),
+        &file_paths
     );
     
     Ok(analysis_result)
@@ -1676,21 +1721,135 @@ fn status_lookup(names: &[String], parsed: &ParsedLog) -> std::collections::Hash
     out
 }
 
+fn report_status_lookup(names: &[String], report_data: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut report_failed_tests = std::collections::HashSet::new();
+    let mut report_passed_tests = std::collections::HashSet::new();
+    
+    // Parse report.json to extract test results using the same logic as C6 check
+    // Try different possible structures for report.json
+    if let Some(results_array) = report_data.get("results").and_then(|r| r.as_array()) {
+        for result in results_array {
+            if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                match status.to_lowercase().as_str() {
+                    "failed" | "fail" => { report_failed_tests.insert(test_name.to_string()); }
+                    "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.to_string()); }
+                    _ => {}
+                }
+            }
+        }
+    } else if let Some(test_results) = report_data.get("test_results").and_then(|r| r.as_array()) {
+        for result in test_results {
+            if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                match status.to_lowercase().as_str() {
+                    "failed" | "fail" => { report_failed_tests.insert(test_name.to_string()); }
+                    "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.to_string()); }
+                    _ => {}
+                }
+            }
+        }
+    } else if let Some(tests_obj) = report_data.get("tests").and_then(|t| t.as_object()) {
+        // Format: {"tests": {"test_name": {"status": "failed"}}}
+        for (test_name, test_data) in tests_obj {
+            if let Some(status) = test_data.get("status").and_then(|s| s.as_str()) {
+                match status.to_lowercase().as_str() {
+                    "failed" | "fail" => { report_failed_tests.insert(test_name.clone()); }
+                    "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.clone()); }
+                    _ => {}
+                }
+            }
+        }
+    } else if let Some(obj) = report_data.as_object() {
+        // Check for SWE-bench format first
+        let mut found_swe_format = false;
+        for (_key, value) in obj {
+            if let Some(tests_status) = value.get("tests_status").and_then(|t| t.as_object()) {
+                found_swe_format = true;
+                
+                // Parse all test categories
+                for (_category, category_data) in tests_status {
+                    if let Some(category_obj) = category_data.as_object() {
+                        // Extract failed tests from "failure" arrays
+                        if let Some(failure_array) = category_obj.get("failure").and_then(|f| f.as_array()) {
+                            for test_item in failure_array {
+                                if let Some(test_name) = test_item.as_str() {
+                                    report_failed_tests.insert(test_name.to_string());
+                                }
+                            }
+                        }
+                        // Extract passed tests from "success" arrays
+                        if let Some(success_array) = category_obj.get("success").and_then(|f| f.as_array()) {
+                            for test_item in success_array {
+                                if let Some(test_name) = test_item.as_str() {
+                                    report_passed_tests.insert(test_name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                break; // Found SWE-bench format, no need to check other keys
+            }
+        }
+        
+        // If not SWE-bench format, try direct mapping format: {"test_name": "status"}
+        if !found_swe_format {
+            for (test_name, status_val) in obj {
+                if let Some(status) = status_val.as_str() {
+                    match status.to_lowercase().as_str() {
+                        "failed" | "fail" => { report_failed_tests.insert(test_name.clone()); }
+                        "passed" | "pass" | "success" => { report_passed_tests.insert(test_name.clone()); }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    // Map test names to their status
+    for name in names {
+        if report_failed_tests.contains(name) {
+            out.insert(name.clone(), "failed".to_string());
+        } else if report_passed_tests.contains(name) {
+            out.insert(name.clone(), "passed".to_string());
+        } else {
+            out.insert(name.clone(), "missing".to_string());
+        }
+    }
+    
+    out
+}
+
 fn generate_analysis_result(
     base_parsed: &ParsedLog,
     before_parsed: &ParsedLog,
     after_parsed: &ParsedLog,
+    agent_parsed: Option<&ParsedLog>,
     pass_to_pass: &[String],
     fail_to_pass: &[String],
     base_path: &str,
     before_path: &str,
     after_path: &str,
+    agent_path: Option<&String>,
+    report_data: Option<&serde_json::Value>,
+    file_paths: &[String],
 ) -> serde_json::Value {
     let universe: Vec<String> = pass_to_pass.iter().chain(fail_to_pass.iter()).cloned().collect();
     
     let base_s = status_lookup(&universe, base_parsed);
     let before_s = status_lookup(&universe, before_parsed);
     let after_s = status_lookup(&universe, after_parsed);
+    let agent_s = if let Some(agent_parsed) = agent_parsed {
+        status_lookup(&universe, agent_parsed)
+    } else {
+        std::collections::HashMap::new()
+    };
+    
+    // Parse report.json status if available
+    let report_s = if let Some(report_data) = report_data {
+        report_status_lookup(&universe, report_data)
+    } else {
+        std::collections::HashMap::new()
+    };
     
     // ---------------- Rule checks parity ----------------
     let c1_hits: Vec<String> = pass_to_pass.iter()
@@ -1712,21 +1871,27 @@ fn generate_analysis_result(
         .collect();
     let c3 = !c3_hits.is_empty();
     
-    // C4: Report *violations* of the valid P2P pattern:
-    //  base: missing AND (before: failed OR missing) AND after: passed
-    // We mark problem when test violates the above (meets first part(s) but fails after, or passes in before).
+    // C4: P2P tests that are missing in base and not passing in before
+    // Logic:
+    // - If P2P passed in base → Skip (don't check)
+    // - If P2P is missing in base → Check before:
+    //   - If passing in before → No violation
+    //   - If missing or failed in before → Violation
     let mut c4_hits: Vec<String> = vec![];
     for t in pass_to_pass {
         let b = base_s.get(t).map(String::as_str).unwrap_or("missing");
         let be = before_s.get(t).map(String::as_str).unwrap_or("missing");
-        let a = after_s.get(t).map(String::as_str).unwrap_or("missing");
+        
+        // If P2P passed in base, skip this test (no need to check before)
+        if b == "passed" {
+            continue;
+        }
+        
+        // If P2P is missing in base, check it in before
         if b == "missing" {
-            let before_ok = be == "failed" || be == "missing";
-            let after_ok = a == "passed";
-            if before_ok && !after_ok {
-                c4_hits.push(format!("{t} (missing in base, {be} in before, but {a} in after)"));
-            } else if !before_ok {
-                c4_hits.push(format!("{t} (missing in base but {be} in before - violates C4 pattern)"));
+            // If P2P is NOT passing in before (missing or failed), it's a violation
+            if be != "passed" {
+                c4_hits.push(format!("{t} (missing in base, {be} in before)"));
             }
         }
     }
@@ -1750,6 +1915,197 @@ fn generate_analysis_result(
         dup_map.insert("after".to_string(), serde_json::Value::Array(after_dups.into_iter().take(50).map(serde_json::Value::String).collect()));
     }
     let c5 = !dup_map.is_empty();
+    
+    // C6: Test marked as failing in report.json but passing in post_agent_log
+    // This checks for inconsistencies between report.json and agent log results
+    let mut c6_hits: Vec<String> = vec![];
+    // C7: F2P tests found in golden source diff files but not in test diff files
+    let mut c7_hits: Vec<String> = vec![];
+    let c7 = {
+        println!("Performing C7 check: looking for F2P tests in golden source diff files (but not in test diffs)");
+        
+        // Find diff/patch files from patches folder
+        let diff_files: Vec<&String> = file_paths.iter()
+            .filter(|path| {
+                let path_lower = path.to_lowercase();
+                path_lower.contains("patches/") && (path_lower.ends_with(".diff") || path_lower.ends_with(".patch"))
+            })
+            .collect();
+        
+        println!("Found {} diff/patch files", diff_files.len());
+        
+        if !diff_files.is_empty() {
+            // Separate golden source diffs from test diffs
+            let (golden_source_diffs, test_diffs): (Vec<&String>, Vec<&String>) = diff_files.iter()
+                .partition(|path| {
+                    let filename = path.split('/').last().unwrap_or("").to_lowercase();
+                    // Golden source diffs typically contain "gold", "golden", "src", "source"
+                    // Test diffs typically contain "test"
+                    (filename.contains("gold") || filename.contains("src") || filename.contains("source")) &&
+                    !filename.contains("test")
+                });
+            
+            println!("Found {} golden source diff files and {} test diff files", 
+                     golden_source_diffs.len(), test_diffs.len());
+            
+            // Read all test diff contents to check if tests appear there
+            let mut test_diff_contents = String::new();
+            for test_diff in &test_diffs {
+                if let Ok(content) = fs::read_to_string(test_diff) {
+                    test_diff_contents.push_str(&content);
+                    test_diff_contents.push('\n');
+                    println!("Read test diff file: {}", test_diff);
+                }
+            }
+            
+            // Check golden source diffs for F2P tests
+            for golden_diff in &golden_source_diffs {
+                println!("Checking golden source diff file: {}", golden_diff);
+                
+                if let Ok(diff_content) = fs::read_to_string(golden_diff) {
+                    println!("Read golden source diff successfully, {} bytes", diff_content.len());
+                    
+                    // Check if any F2P test names appear in this golden source diff
+                    for f2p_test in fail_to_pass {
+                        // Extract the actual test name from module path (e.g., "tests::test_example" -> "test_example")
+                        let test_name_to_search = if f2p_test.contains("::") {
+                            f2p_test.split("::").last().unwrap_or(f2p_test)
+                        } else {
+                            f2p_test
+                        };
+                        
+                        if diff_content.contains(test_name_to_search) {
+                            // Check if this test also appears in test diffs
+                            if !test_diff_contents.is_empty() && test_diff_contents.contains(test_name_to_search) {
+                                println!("F2P test '{}' found in both golden source and test diffs - not a violation", f2p_test);
+                            } else {
+                                let violation = format!("{} (found as '{}' in {} but not in test diffs)", 
+                                                      f2p_test, test_name_to_search, 
+                                                      golden_diff.split('/').last().unwrap_or(golden_diff));
+                                c7_hits.push(violation);
+                                println!("C7 violation: F2P test '{}' found as '{}' in golden source diff '{}' but not in test diffs", 
+                                         f2p_test, test_name_to_search, golden_diff);
+                            }
+                        }
+                    }
+                } else {
+                    println!("Failed to read golden source diff file: {}", golden_diff);
+                }
+            }
+        } else {
+            println!("No diff/patch files found in patches folder");
+        }
+        
+        let has_violations = !c7_hits.is_empty();
+        println!("C7 check completed: {} violations found", c7_hits.len());
+        has_violations
+    };
+
+    let c6 = if let (Some(_agent_parsed), Some(report_data)) = (agent_parsed, report_data) {
+        println!("Performing C6 check: comparing report.json with agent log results");
+        
+        // Parse report.json to extract test results
+        // Common formats: results array, test_results array, direct test mapping, or SWE-bench format
+        let mut report_failed_tests = std::collections::HashSet::new();
+        
+        // Try different possible structures for report.json
+        if let Some(results_array) = report_data.get("results").and_then(|r| r.as_array()) {
+            for result in results_array {
+                if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                    if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                        report_failed_tests.insert(test_name.to_string());
+                    }
+                }
+            }
+        } else if let Some(test_results) = report_data.get("test_results").and_then(|r| r.as_array()) {
+            for result in test_results {
+                if let (Some(test_name), Some(status)) = (result.get("test_name").and_then(|t| t.as_str()), result.get("status").and_then(|s| s.as_str())) {
+                    if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                        report_failed_tests.insert(test_name.to_string());
+                    }
+                }
+            }
+        } else if let Some(tests_obj) = report_data.get("tests").and_then(|t| t.as_object()) {
+            // Format: {"tests": {"test_name": {"status": "failed"}}}
+            for (test_name, test_data) in tests_obj {
+                if let Some(status) = test_data.get("status").and_then(|s| s.as_str()) {
+                    if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                        report_failed_tests.insert(test_name.clone());
+                    }
+                }
+            }
+        } else if let Some(obj) = report_data.as_object() {
+            // Check for SWE-bench format first
+            let mut found_swe_format = false;
+            for (key, value) in obj {
+                if let Some(tests_status) = value.get("tests_status").and_then(|t| t.as_object()) {
+                    println!("Found SWE-bench format report.json for key: {}", key);
+                    found_swe_format = true;
+                    
+                    // Parse all test categories that indicate failure
+                    for (category, category_data) in tests_status {
+                        if let Some(category_obj) = category_data.as_object() {
+                            // Extract failed tests from "failure" arrays in all categories
+                            if let Some(failure_array) = category_obj.get("failure").and_then(|f| f.as_array()) {
+                                for test_item in failure_array {
+                                    if let Some(test_name) = test_item.as_str() {
+                                        report_failed_tests.insert(test_name.to_string());
+                                        println!("Found failed test in category {}: {}", category, test_name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break; // Found SWE-bench format, no need to check other keys
+                }
+            }
+            
+            // If not SWE-bench format, try direct mapping format: {"test_name": "status"}
+            if !found_swe_format {
+                for (test_name, status_val) in obj {
+                    if let Some(status) = status_val.as_str() {
+                        if status.to_lowercase() == "failed" || status.to_lowercase() == "fail" {
+                            report_failed_tests.insert(test_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("Found {} failed tests in report.json", report_failed_tests.len());
+        
+        // Check F2P and P2P tests for inconsistencies in both directions
+        for test_name in &universe {
+            let report_status = if report_failed_tests.contains(test_name) {
+                "failed"
+            } else if report_s.get(test_name) == Some(&"passed".to_string()) {
+                "passed"
+            } else {
+                "missing" // Skip tests that are missing in report.json
+            };
+            
+            let agent_status = agent_s.get(test_name).map(String::as_str).unwrap_or("missing");
+            
+            // Check for status mismatches (excluding missing cases)
+            if report_status != "missing" && agent_status != "missing" && report_status != agent_status {
+                match (report_status, agent_status) {
+                    ("failed", "passed") => {
+                        c6_hits.push(format!("{} (marked as failed in report.json but passing in agent log)", test_name));
+                    },
+                    ("passed", "failed") => {
+                        c6_hits.push(format!("{} (marked as passed in report.json but failing in agent log)", test_name));
+                    },
+                    _ => {} // Other combinations like "passed" vs "ignored" could be added if needed
+                }
+            }
+        }
+        
+        println!("C6 check found {} inconsistencies", c6_hits.len());
+        !c6_hits.is_empty()
+    } else {
+        println!("C6 check skipped: missing agent log or report.json");
+        false
+    };
     
     // P2P rejection logic
     let p2p_ignored: Vec<String> = pass_to_pass.iter()
@@ -1801,6 +2157,8 @@ fn generate_analysis_result(
         test_data.insert("base".to_string(), serde_json::Value::String(base_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("agent".to_string(), serde_json::Value::String(agent_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("report".to_string(), serde_json::Value::String(report_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         p2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
     }
     
@@ -1811,7 +2169,43 @@ fn generate_analysis_result(
         test_data.insert("base".to_string(), serde_json::Value::String(base_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("before".to_string(), serde_json::Value::String(before_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         test_data.insert("after".to_string(), serde_json::Value::String(after_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("agent".to_string(), serde_json::Value::String(agent_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
+        test_data.insert("report".to_string(), serde_json::Value::String(report_s.get(test_name).unwrap_or(&"missing".to_string()).clone()));
         f2p_analysis.insert(test_name.clone(), serde_json::Value::Object(test_data));
+    }
+    
+    // Generate debug_log_counts
+    let mut debug_log_counts = vec![
+        serde_json::json!({
+            "label": "base",
+            "passed": base_parsed.passed.len(),
+            "failed": base_parsed.failed.len(),
+            "ignored": base_parsed.ignored.len(),
+            "all": base_parsed.all.len(),
+        }),
+        serde_json::json!({
+            "label": "before",
+            "passed": before_parsed.passed.len(),
+            "failed": before_parsed.failed.len(),
+            "ignored": before_parsed.ignored.len(),
+            "all": before_parsed.all.len(),
+        }),
+        serde_json::json!({
+            "label": "after",
+            "passed": after_parsed.passed.len(),
+            "failed": after_parsed.failed.len(),
+            "ignored": after_parsed.ignored.len(),
+            "all": after_parsed.all.len(),
+        }),
+    ];
+    if let Some(agent_parsed) = agent_parsed {
+        debug_log_counts.push(serde_json::json!({
+            "label": "agent",
+            "passed": agent_parsed.passed.len(),
+            "failed": agent_parsed.failed.len(),
+            "ignored": agent_parsed.ignored.len(),
+            "all": agent_parsed.all.len(),
+        }));
     }
     
     serde_json::json!({
@@ -1819,6 +2213,7 @@ fn generate_analysis_result(
             "base_log": base_path,
             "before_log": before_path,
             "after_log": after_path,
+            "agent_log": agent_path.map(|p| p.as_str()).unwrap_or(""),
         },
         "counts": {
             "P2P": pass_to_pass.len(),
@@ -1845,6 +2240,14 @@ fn generate_analysis_result(
                 "has_problem": c5,
                 "duplicate_examples_per_log": serde_json::Value::Object(dup_map)
             },
+            "c6_test_marked_failed_in_report_but_passing_in_agent": {
+                "has_problem": c6,
+                "examples": c6_hits
+            },
+            "c7_f2p_tests_in_golden_source_diff": {
+                "has_problem": c7,
+                "examples": c7_hits
+            },
         },
         "rejection_reason": {
             "satisfied": rejection_satisfied,
@@ -1859,28 +2262,6 @@ fn generate_analysis_result(
         },
         "p2p_analysis": p2p_analysis,
         "f2p_analysis": f2p_analysis,
-        "debug_log_counts": [
-            {
-                "label": "base",
-                "passed": base_parsed.passed.len(),
-                "failed": base_parsed.failed.len(),
-                "ignored": base_parsed.ignored.len(),
-                "all": base_parsed.all.len(),
-            },
-            {
-                "label": "before",
-                "passed": before_parsed.passed.len(),
-                "failed": before_parsed.failed.len(),
-                "ignored": before_parsed.ignored.len(),
-                "all": before_parsed.all.len(),
-            },
-            {
-                "label": "after",
-                "passed": after_parsed.passed.len(),
-                "failed": after_parsed.failed.len(),
-                "ignored": after_parsed.ignored.len(),
-                "all": after_parsed.all.len(),
-            },
-        ],
+        "debug_log_counts": serde_json::Value::Array(debug_log_counts)
     })
 }
