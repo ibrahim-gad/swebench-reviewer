@@ -232,7 +232,7 @@ export default function ReportCheckerPage() {
         "c3_F2P_success_in_before": "At least one F2P test is present and successful in before log",
         "c4_P2P_missing_in_base_and_not_passing_in_before": "At least one P2P, that is missing in base, and is found but failing in before or is missing from base and before",
         "c5_duplicates_in_same_log_for_F2P_or_P2P": "At least one F2P / P2P test name is duplicated (present 2 times in the same logs)",
-        "c6_test_marked_failed_in_report_but_passing_in_agent": "Test marked as failed in report.json but passing in agent log",
+        "c6_test_marked_failed_in_report_but_passing_in_agent": "Test status mismatch between report.json and agent log",
         "c7_f2p_tests_in_golden_source_diff": "At least one F2P test name found in golden source diff files"
       };
       

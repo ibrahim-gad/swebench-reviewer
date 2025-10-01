@@ -2074,13 +2074,28 @@ fn generate_analysis_result(
         
         println!("Found {} failed tests in report.json", report_failed_tests.len());
         
-        // Check F2P and P2P tests for inconsistencies
+        // Check F2P and P2P tests for inconsistencies in both directions
         for test_name in &universe {
-            if report_failed_tests.contains(test_name) {
-                // Test is marked as failed in report.json
-                if agent_s.get(test_name) == Some(&"passed".to_string()) {
-                    // But it's passing in agent log - this is an inconsistency!
-                    c6_hits.push(format!("{} (marked as failed in report.json but passing in agent log)", test_name));
+            let report_status = if report_failed_tests.contains(test_name) {
+                "failed"
+            } else if report_s.get(test_name) == Some(&"passed".to_string()) {
+                "passed"
+            } else {
+                "missing" // Skip tests that are missing in report.json
+            };
+            
+            let agent_status = agent_s.get(test_name).map(String::as_str).unwrap_or("missing");
+            
+            // Check for status mismatches (excluding missing cases)
+            if report_status != "missing" && agent_status != "missing" && report_status != agent_status {
+                match (report_status, agent_status) {
+                    ("failed", "passed") => {
+                        c6_hits.push(format!("{} (marked as failed in report.json but passing in agent log)", test_name));
+                    },
+                    ("passed", "failed") => {
+                        c6_hits.push(format!("{} (marked as passed in report.json but failing in agent log)", test_name));
+                    },
+                    _ => {} // Other combinations like "passed" vs "ignored" could be added if needed
                 }
             }
         }
