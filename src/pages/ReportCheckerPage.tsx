@@ -19,6 +19,7 @@ interface FileInfo {
 interface ValidationResult {
   files_to_download: FileInfo[];
   folder_id: string;
+  folder_name: string;
 }
 
 interface DownloadResult {
@@ -68,6 +69,7 @@ type MainTabKey = "input" | /* "result" | */ "manual_checker"; // COMMENTED OUT 
 
 export default function ReportCheckerPage() {
   const [deliverableLink, setDeliverableLink] = useState("");
+  const [deliverableTitle, setDeliverableTitle] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentStage, setCurrentStage] = useState<ProcessingStage | null>(null);
   const [stages, setStages] = useState<ProcessingStages>({
@@ -338,6 +340,7 @@ export default function ReportCheckerPage() {
 
   const resetState = () => {
     setDeliverableLink("");
+    setDeliverableTitle("");
     setIsProcessing(false);
     setCurrentStage(null);
     setStages({
@@ -1199,6 +1202,7 @@ export default function ReportCheckerPage() {
       setCurrentStage("validating");
       updateStageStatus("validating", "active");
       const validationData = await invoke("validate_deliverable", { folderLink: trimmedLink }) as ValidationResult;
+      setDeliverableTitle(validationData.folder_name || "");
       updateStageStatus("validating", "completed");
 
       // Stage 2: Downloading
@@ -1300,7 +1304,17 @@ export default function ReportCheckerPage() {
             </button>
 
             {/* Main Tab Navigation - Centered and Larger */}
+           
             <div className="flex justify-center absolute left-1/2 transform -translate-x-1/2">
+             {deliverableTitle && (             
+               <div className="flex flex-row gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600 dark:text-gray-400 font-mono max-w-xs truncate px-6 py-2.5">
+                    {deliverableTitle}
+                  </span>
+                </div>
+                </div>
+            )}
               <div className="flex space-x-1 bg-gray-100 dark:bg-gray-700 p-1 rounded">
                 <button
                   onClick={() => setActiveMainTabWithMemory("manual_checker")}

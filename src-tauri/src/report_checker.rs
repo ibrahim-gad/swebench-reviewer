@@ -16,6 +16,7 @@ pub struct FileInfo {
 pub struct ValidationResult {
     pub files_to_download: Vec<FileInfo>,
     pub folder_id: String,
+    pub folder_name: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -289,6 +290,7 @@ pub async fn validate_deliverable(folder_link: String) -> Result<ValidationResul
     Ok(ValidationResult {
         files_to_download,
         folder_id: folder_id.to_string(),
+        folder_name: folder_name.to_string(),
     })
 }
 
