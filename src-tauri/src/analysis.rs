@@ -2437,153 +2437,42 @@ fn extract_test_name_from_nextest_line(full_line: &str) -> String {
     
     println!("EXTRACT DEBUG: input='{}'", trimmed);
     
-    // Strategy: Try different parsing approaches and return the most reasonable result
-    let candidates = generate_test_name_candidates(trimmed);
+    // Remove the crate prefix but keep the test path
+    // Examples:
+    // "grillon::lib assert::json_path::json_path_does_not_match" -> "assert::json_path::json_path_does_not_match"
+    // "miden-testing kernel_tests::tx::test_account_delta::storage_delta_for_map_slots" -> "kernel_tests::tx::test_account_delta::storage_delta_for_map_slots"
+    // "miden-testing::miden-integration-tests scripts::faucet::test" -> "scripts::faucet::test"
     
-    // Pick the best candidate based on heuristics
-    let best_candidate = select_best_candidate(&candidates);
-    
-    println!("EXTRACT DEBUG: candidates={:?}, selected='{}'", candidates, best_candidate);
-    best_candidate
-}
-
-// Generate multiple possible test name candidates from a nextest line
-fn generate_test_name_candidates(line: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    
-    // Candidate 1: Original line as-is (fallback)
-    candidates.push(line.to_string());
-    
-    // Candidate 2: Handle space-separated format (e.g., "grillon assertion::impls::...")
-    if let Some(space_pos) = line.find(' ') {
-        let crate_part = &line[..space_pos];
-        let module_part = &line[space_pos + 1..].trim();
-        
-        if !module_part.is_empty() {
-            // Try with crate name included (original format)
-            candidates.push(line.to_string());
-            
-            // Try without crate name (just the module path)
-            candidates.push(module_part.to_string());
-            
-            // Special handling for crate names that look like crates (hyphens, lowercase)
-            if crate_part.contains('-') && crate_part.chars().all(|c| c.is_lowercase() || c == '-') {
-                candidates.push(format!("{} {}", crate_part, module_part));
-                candidates.push(module_part.to_string());
-            }
-        }
+    // Find the first space character - this separates the crate prefix from the test path
+    if let Some(space_pos) = trimmed.find(' ') {
+        let result = trimmed[space_pos + 1..].trim().to_string();
+        println!("EXTRACT DEBUG: removed crate prefix, result='{}'", result);
+        return result;
     }
     
-    // Candidate 3: Handle double-colon format (e.g., "grillon::lib assert::...")
-    if let Some(lib_pos) = line.find("::lib ") {
-        // Handle "crate::lib module::path" -> "module::path"
-        let after_lib = &line[lib_pos + 6..].trim(); // 6 = length of "::lib "
-        if !after_lib.is_empty() {
-            candidates.push(after_lib.to_string());
-        }
-    }
-    
-    // Candidate 4: Handle other double-colon patterns
-    if let Some(double_colon_pos) = line.find("::") {
-        let before_colon = &line[..double_colon_pos];
-        let after_colon = &line[double_colon_pos + 2..];
-        
-        // Try splitting at the "::" boundary
-        candidates.push(after_colon.to_string());
-        
-        // Try finding the last word before "::" and include that
-        if let Some(last_space) = before_colon.rfind(' ') {
-            let last_word = &before_colon[last_space + 1..];
-            candidates.push(format!("{}{}", last_word, &line[double_colon_pos..]));
-        }
-        
-        // Handle special patterns like "crate::something::else"
-        if before_colon.contains('-') && !before_colon.contains(' ') {
-            // This might be "crate-name::module::path" -> "module::path"
-            candidates.push(after_colon.to_string());
-        }
-    }
-    
-    // Candidate 5: Handle mixed patterns - try to extract test paths that look like module paths
-    if line.contains("::") {
-        // Look for patterns like "word::word::test" or "word::tests::"
-        let parts: Vec<&str> = line.split("::").collect();
-        if parts.len() >= 2 {
-            // Try combinations starting from different positions
-            for start_idx in 1..parts.len() {
-                let module_path = parts[start_idx..].join("::");
-                if !module_path.is_empty() && (module_path.contains("test") || module_path.len() > 10) {
-                    candidates.push(module_path);
+    // If no space found, look for patterns like "crate::module test_name" or "crate::lib test_name"
+    // Split on double colon and look for common separators
+    let parts: Vec<&str> = trimmed.split("::").collect();
+    if parts.len() >= 2 {
+        // Look for common crate/lib separators
+        for (i, part) in parts.iter().enumerate() {
+            if *part == "lib" || part.ends_with("-testing") || part.starts_with("miden-") {
+                if i + 1 < parts.len() {
+                    let result = parts[i + 1..].join("::");
+                    println!("EXTRACT DEBUG: found separator '{}', result='{}'", part, result);
+                    return result;
                 }
             }
         }
     }
     
-    // Remove duplicates while preserving order
-    let mut unique_candidates = Vec::new();
-    for candidate in candidates {
-        if !unique_candidates.contains(&candidate) && !candidate.is_empty() {
-            unique_candidates.push(candidate);
-        }
-    }
-    
-    unique_candidates
+    // If no patterns match, return the original (shouldn't happen for proper nextest format)
+    let result = trimmed.to_string();
+    println!("EXTRACT DEBUG: no pattern matched, keeping original='{}'", result);
+    result
 }
 
-// Select the best candidate based on heuristics
-fn select_best_candidate(candidates: &[String]) -> String {
-    if candidates.is_empty() {
-        return String::new();
-    }
-    
-    // Preference order:
-    // 1. Module paths that start with common test patterns (tests::, test_, etc.)
-    // 2. Module paths with :: but not containing crate-like prefixes
-    // 3. Shorter, cleaner looking paths
-    // 4. Fallback to the first candidate
-    
-    let mut scored_candidates: Vec<(usize, &String)> = candidates.iter().enumerate().map(|(i, c)| (i, c)).collect();
-    
-    // Sort by preference score (lower is better)
-    scored_candidates.sort_by_key(|(_, candidate)| {
-        let mut score = 0;
-        
-        // Prefer candidates that look like test module paths
-        if candidate.contains("::test") || candidate.starts_with("test") || candidate.contains("::tests::") {
-            score -= 100;
-        }
-        
-        // Prefer candidates with :: (module paths) over plain names
-        if candidate.contains("::") {
-            score -= 50;
-        }
-        
-        // Penalize candidates that look like full crate names with spaces
-        if candidate.contains(' ') && candidate.split(' ').next().unwrap_or("").contains('-') {
-            score += 20;
-        }
-        
-        // Prefer shorter candidates (but not too short)
-        if candidate.len() > 10 && candidate.len() < 100 {
-            score -= 10;
-        }
-        
-        // Penalize very long candidates
-        if candidate.len() > 150 {
-            score += 50;
-        }
-        
-        // Prefer candidates that don't start with obvious crate names
-        let first_part = candidate.split("::").next().unwrap_or(candidate);
-        if first_part.contains('-') && first_part.chars().all(|c| c.is_lowercase() || c == '-') {
-            score += 30;
-        }
-        
-        score
-    });
-    
-    scored_candidates.first().map(|(_, candidate)| (*candidate).clone()).unwrap_or_else(|| candidates[0].clone())
-}
+
 
 // Test function to verify nextest parsing
 #[tauri::command]
