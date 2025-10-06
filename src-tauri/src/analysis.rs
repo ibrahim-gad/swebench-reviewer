@@ -2437,36 +2437,54 @@ fn extract_test_name_from_nextest_line(full_line: &str) -> String {
     
     println!("EXTRACT DEBUG: input='{}'", trimmed);
     
-    // Remove the crate prefix but keep the test path
-    // Examples:
-    // "grillon::lib assert::json_path::json_path_does_not_match" -> "assert::json_path::json_path_does_not_match"
-    // "miden-testing kernel_tests::tx::test_account_delta::storage_delta_for_map_slots" -> "kernel_tests::tx::test_account_delta::storage_delta_for_map_slots"
-    // "miden-testing::miden-integration-tests scripts::faucet::test" -> "scripts::faucet::test"
+    // Simple approach: Just return the full test name as captured by regex
+    // The nextest format is: "PASS [time] full_test_name"
+    // We should preserve the full test name exactly as it appears
     
-    // Find the first space character - this separates the crate prefix from the test path
-    if let Some(space_pos) = trimmed.find(' ') {
-        let result = trimmed[space_pos + 1..].trim().to_string();
-        println!("EXTRACT DEBUG: removed crate prefix, result='{}'", result);
+    // Special handling for known patterns in main.json:
+    // 1. "miden-testing kernel_tests::..." -> keep as is
+    // 2. "miden-testing::miden-integration-tests ..." -> keep as is  
+    // 3. "miden-lib ..." -> keep as is
+    // 4. "miden-objects ..." -> keep as is
+    // 5. "miden-tx ..." -> keep as is (NEW - this was missing!)
+    
+    // For miden crates, the format in main.json matches exactly what's in the log
+    if trimmed.starts_with("miden-") {
+        let result = trimmed.to_string();
+        println!("EXTRACT DEBUG: Miden crate, keeping as-is='{}'", result);
         return result;
     }
     
-    // If no space found, look for patterns like "crate::module test_name" or "crate::lib test_name"
-    // Split on double colon and look for common separators
-    let parts: Vec<&str> = trimmed.split("::").collect();
-    if parts.len() >= 2 {
-        // Look for common crate/lib separators
-        for (i, part) in parts.iter().enumerate() {
-            if *part == "lib" || part.ends_with("-testing") || part.starts_with("miden-") {
-                if i + 1 < parts.len() {
-                    let result = parts[i + 1..].join("::");
-                    println!("EXTRACT DEBUG: found separator '{}', result='{}'", part, result);
-                    return result;
-                }
-            }
+    // Check for double crate format: "miden-testing::miden-integration-tests scripts::faucet::test"
+    if trimmed.contains("::miden-integration-tests ") {
+        let result = trimmed.to_string();
+        println!("EXTRACT DEBUG: Double crate format, keeping as-is='{}'", result);
+        return result;
+    }
+    
+    // Check for crate::lib format: "grillon::lib assert::json_path..." -> just the test part
+    if trimmed.contains("::lib ") {
+        if let Some(lib_pos) = trimmed.find("::lib ") {
+            let result = trimmed[lib_pos + 6..].trim().to_string(); // 6 = len("::lib ")
+            println!("EXTRACT DEBUG: crate::lib format, extracting test part='{}'", result);
+            return result;
         }
     }
     
-    // If no patterns match, return the original (shouldn't happen for proper nextest format)
+    // For other formats, check if there's a space and we should remove the crate prefix
+    if let Some(space_pos) = trimmed.find(' ') {
+        let crate_part = &trimmed[..space_pos];
+        let test_part = &trimmed[space_pos + 1..];
+        
+        // If the crate part doesn't contain "::" and the test part does, remove the crate prefix
+        if !crate_part.contains("::") && test_part.contains("::") {
+            let result = test_part.trim().to_string();
+            println!("EXTRACT DEBUG: Generic crate format, removing prefix='{}'", result);
+            return result;
+        }
+    }
+    
+    // If no patterns match, return the original
     let result = trimmed.to_string();
     println!("EXTRACT DEBUG: no pattern matched, keeping original='{}'", result);
     result
@@ -2481,7 +2499,8 @@ pub fn test_nextest_parsing() -> Result<String, String> {
 PASS [   0.155s] grillon::lib assert::json_path::json_path_does_not_match
 PASS [   0.028s] miden-lib account::interface::test::test_basic_wallet_default_notes
 PASS [   0.034s] miden-testing kernel_tests::tx::test_account_delta::storage_delta_for_map_slots
-PASS [   0.045s] miden-testing::miden-integration-tests scripts::faucet::faucet_contract_mint_fungible_asset_fails_exceeds_max_supply"#;
+PASS [   0.045s] miden-testing::miden-integration-tests scripts::faucet::faucet_contract_mint_fungible_asset_fails_exceeds_max_supply
+PASS [   2.877s] miden-tx auth::tx_authenticator::test::serialize_auth_key"#;
     
     println!("=== TESTING NEXTEST PARSING ===");
     
@@ -2501,6 +2520,13 @@ PASS [   0.045s] miden-testing::miden-integration-tests scripts::faucet::faucet_
     for test in &parsed.passed {
         println!("    - {}", test);
     }
+    
+    // Test specific extraction for the problematic case
+    println!("\n=== TESTING SPECIFIC EXTRACTION ===");
+    let test_line = "miden-tx auth::tx_authenticator::test::serialize_auth_key";
+    let extracted = extract_test_name_from_nextest_line(test_line);
+    println!("Input: '{}'", test_line);
+    println!("Extracted: '{}'", extracted);
     
     Ok(format!("Parsed {} passed tests", parsed.passed.len()))
 }
