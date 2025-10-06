@@ -54,9 +54,9 @@ lazy_static! {
     static ref UI_TEST_PATH_SIMPLE_RE: Regex = Regex::new(r"(?i)^([^\s]+(?:/[^\s]+)*\.(?:rs|fixed|toml|txt|md)(?:\s+\(revision\s+[^)]+\))?)\s+\.\.\.\s+(ok|FAILED|ignored|error)\s*$").unwrap();
     
     // Nextest format patterns - handles "PASS [duration] test_name" and "FAIL [duration] test_name"
-    static ref NEXTEST_PASS_RE: Regex = Regex::new(r"(?i)^\s*PASS\s+\[[^\]]+\]\s+(.+)$").unwrap();
-    static ref NEXTEST_FAIL_RE: Regex = Regex::new(r"(?i)^\s*FAIL\s+\[[^\]]+\]\s+(.+)$").unwrap();
-    static ref NEXTEST_SKIP_RE: Regex = Regex::new(r"(?i)^\s*(SKIP|IGNORED)\s+\[[^\]]+\]\s+(.+)$").unwrap();
+    static ref NEXTEST_PASS_RE: Regex = Regex::new(r"(?i)\s*PASS\s+\[[^\]]+\]\s+(.+?)\s*$").unwrap();
+    static ref NEXTEST_FAIL_RE: Regex = Regex::new(r"(?i)\s*FAIL\s+\[[^\]]+\]\s+(.+?)\s*$").unwrap();
+    static ref NEXTEST_SKIP_RE: Regex = Regex::new(r"(?i)\s*(SKIP|IGNORED)\s+\[[^\]]+\]\s+(.+?)\s*$").unwrap();
     
     // START pattern for nextest - captures test names from START lines
     static ref NEXTEST_START_RE: Regex = Regex::new(r"(?i)^\s*START\s+(.+)$").unwrap();
@@ -917,10 +917,27 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
             let status = m.as_str().to_lowercase();
             let match_start = m.start();
             
-            // Get context around the match
+            // Get context around the match (safely handle UTF-8 boundaries)
             let context_start = match_start.saturating_sub(50);
             let context_end = std::cmp::min(match_start + 50, window.len());
-            let context = &window[context_start..context_end].to_lowercase();
+            
+            // Optimized single-pass character boundary detection
+            let mut safe_start = None;
+            let mut safe_end = None;
+            for (i, _) in window.char_indices() {
+                if safe_start.is_none() && i >= context_start {
+                    safe_start = Some(i);
+                }
+                if safe_end.is_none() && i >= context_end {
+                    safe_end = Some(i);
+                }
+                if safe_start.is_some() && safe_end.is_some() {
+                    break;
+                }
+            }
+            let safe_start = safe_start.unwrap_or(context_start);
+            let safe_end = safe_end.unwrap_or(context_end);
+            let context = &window[safe_start..safe_end].to_lowercase();
             
             // Enhanced filtering to avoid false positives
             if status == "error" && (
@@ -1085,7 +1102,10 @@ fn looks_nextest_format(text: &str) -> bool {
     // Also check for the mixed format pattern with traditional + nextest
     let has_mixed_format = text.contains("PASS [") && text.contains("test ") && text.contains("... ok");
     
-    has_indicators || nextest_lines > 5 || has_mixed_format
+    // Check for cargo nextest run command line
+    let has_nextest_command = text.contains("cargo nextest run");
+    
+    has_indicators || nextest_lines > 5 || has_mixed_format || has_nextest_command
 }
 
 fn parse_nextest_log(text: &str) -> ParsedLog {
@@ -1099,22 +1119,30 @@ fn parse_nextest_log(text: &str) -> ParsedLog {
     for (i, line) in lines.iter().enumerate() {
         // Parse PASS lines
         if let Some(captures) = NEXTEST_PASS_RE.captures(line) {
-            let test_name = captures.get(1).unwrap().as_str().trim().to_string();
+            let full_match = captures.get(1).unwrap().as_str().trim();
+            // Extract just the test name part (after the crate name)
+            let test_name = extract_test_name_from_nextest_line(full_match);
             passed.insert(test_name);
             continue;
         }
         
         // Parse FAIL lines
         if let Some(captures) = NEXTEST_FAIL_RE.captures(line) {
-            let test_name = captures.get(1).unwrap().as_str().trim().to_string();
+            let full_match = captures.get(1).unwrap().as_str().trim();
+            // Extract just the test name part (after the crate name)
+            let test_name = extract_test_name_from_nextest_line(full_match);
             failed.insert(test_name);
             continue;
         }
         
-        // Parse SKIP/IGNORED lines
+        // Parse SKIP/IGNORED lines - note: using capture group 2 for SKIP/IGNORED
         if let Some(captures) = NEXTEST_SKIP_RE.captures(line) {
-            let test_name = captures.get(2).unwrap().as_str().trim().to_string();
-            ignored.insert(test_name);
+            // For SKIP/IGNORED pattern, the test name is in group 2
+            if let Some(test_name_match) = captures.get(2) {
+                let full_match = test_name_match.as_str().trim();
+                let test_name = extract_test_name_from_nextest_line(full_match);
+                ignored.insert(test_name);
+            }
             continue;
         }
         
@@ -1471,10 +1499,27 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
             let status = cap.get(1).unwrap().as_str().to_lowercase();
             let match_start = cap.get(0).unwrap().start();
             
-            // Get some context around the match
+            // Get some context around the match (safely handle UTF-8 boundaries)
             let context_start = match_start.saturating_sub(50);
             let context_end = std::cmp::min(match_start + 50, search_text.len());
-            let context = &search_text[context_start..context_end].to_lowercase();
+            
+            // Optimized single-pass character boundary detection
+            let mut safe_start = None;
+            let mut safe_end = None;
+            for (i, _) in search_text.char_indices() {
+                if safe_start.is_none() && i >= context_start {
+                    safe_start = Some(i);
+                }
+                if safe_end.is_none() && i >= context_end {
+                    safe_end = Some(i);
+                }
+                if safe_start.is_some() && safe_end.is_some() {
+                    break;
+                }
+            }
+            let safe_start = safe_start.unwrap_or(context_start);
+            let safe_end = safe_end.unwrap_or(context_end);
+            let context = &search_text[safe_start..safe_end].to_lowercase();
             
             // Enhanced filtering to avoid false positives
             if status == "error" && (
@@ -2299,4 +2344,47 @@ fn generate_analysis_result(
         "f2p_analysis": f2p_analysis,
         "debug_log_counts": serde_json::Value::Array(debug_log_counts)
     })
+}
+
+// Function to extract clean test name from nextest line
+// Input: "grillon assertion::impls::header::tests::header_map::impl_is_eq_header_map"
+// Output: "assertion::impls::header::tests::header_map::impl_is_eq_header_map"
+fn extract_test_name_from_nextest_line(full_line: &str) -> String {
+    // Split by spaces and get the part after the crate name
+    let parts: Vec<&str> = full_line.trim().split_whitespace().collect();
+    
+    // If we have multiple parts, the first is usually the crate name (e.g., "grillon")
+    // and the rest form the actual test path
+    if parts.len() >= 2 {
+        // Join all parts except the first (which is typically the crate name)
+        parts[1..].join(" ")
+    } else if parts.len() == 1 {
+        // If only one part, check if it contains the crate prefix pattern
+        let part = parts[0];
+        
+        // Look for patterns like "crate_name module::path::test_name"
+        // Try to find the first occurrence of "::" and see if there's a word before it
+        if let Some(double_colon_pos) = part.find("::") {
+            // Find the space or start that precedes the module path
+            let before_double_colon = &part[..double_colon_pos];
+            if let Some(last_space) = before_double_colon.rfind(' ') {
+                // Return everything after the last space before "::"
+                part[last_space + 1..].to_string()
+            } else {
+                // Check if the part before "::" looks like a crate name (single word)
+                // and the part after "::" looks like a module path
+                let words_before: Vec<&str> = before_double_colon.split_whitespace().collect();
+                if words_before.len() == 1 && !before_double_colon.contains("::") {
+                    // Likely format: "crate_name module::path::test"
+                    part[double_colon_pos - words_before[0].len()..].trim().to_string()
+                } else {
+                    part.to_string()
+                }
+            }
+        } else {
+            part.to_string()
+        }
+    } else {
+        full_line.trim().to_string()
+    }
 }
