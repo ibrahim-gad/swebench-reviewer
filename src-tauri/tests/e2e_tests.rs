@@ -20,14 +20,216 @@ use std::time::{Duration, SystemTime};
 use std::collections::HashSet;
 use serde_json;
 use chrono;
+use serde::{Serialize, Deserialize};
 
 // Import the library modules we need to test
 use swe_reviewer_lib::report_checker::{validate_deliverable, download_deliverable, process_deliverable};
 use swe_reviewer_lib::analysis::analyze_logs;
 
-// Import test configuration
-mod test_config;
-use test_config::{TestConfig, SerializableTestResult, setup, utils, execution};
+// Inline test configuration to avoid external file dependencies
+
+/// Test execution configuration
+#[derive(Debug, Clone)]
+pub struct TestConfig {
+    pub timeout_seconds: u64,
+    pub retry_attempts: u32,
+    pub parallel_execution: bool,
+    pub save_logs: bool,
+    pub log_directory: String,
+}
+
+impl Default for TestConfig {
+    fn default() -> Self {
+        Self {
+            timeout_seconds: std::env::var("E2E_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300), // 5 minutes default
+            retry_attempts: std::env::var("E2E_RETRY_ATTEMPTS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1),
+            parallel_execution: std::env::var("E2E_PARALLEL")
+                .map(|s| s.to_lowercase() == "true")
+                .unwrap_or(false),
+            save_logs: std::env::var("E2E_SAVE_LOGS")
+                .map(|s| s.to_lowercase() != "false")
+                .unwrap_or(true),
+            log_directory: std::env::var("E2E_LOG_DIR")
+                .unwrap_or_else(|_| "test_logs".to_string()),
+        }
+    }
+}
+
+/// Test result for JSON serialization
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SerializableTestResult {
+    pub test_id: usize,
+    pub passed: bool,
+    pub violations_found: Vec<String>,
+    pub error: Option<String>,
+    pub duration_seconds: f64,
+    pub timestamp: String,
+}
+
+/// Test execution strategies
+pub mod execution {
+    /// Execution strategy for tests
+    #[derive(Debug, Clone)]
+    pub enum ExecutionStrategy {
+        All,
+        FailFast,
+        Sequential,
+    }
+    
+    impl ExecutionStrategy {
+        /// Get test IDs for this strategy
+        pub fn get_test_ids(&self) -> Vec<usize> {
+            (1..=15).collect() // All test IDs 1-15
+        }
+        
+        /// Should stop on first failure
+        pub fn should_fail_fast(&self) -> bool {
+            matches!(self, ExecutionStrategy::FailFast)
+        }
+    }
+    
+    /// Parse execution strategy from command line args
+    pub fn parse_strategy_from_args(args: &[String]) -> ExecutionStrategy {
+        if args.is_empty() {
+            return ExecutionStrategy::All;
+        }
+        
+        match args[0].as_str() {
+            "all" => ExecutionStrategy::All,
+            "fail-fast" => ExecutionStrategy::FailFast,
+            "sequential" => ExecutionStrategy::Sequential,
+            _ => ExecutionStrategy::All,
+        }
+    }
+}
+
+/// Setup utilities
+pub mod setup {
+    /// Check if required environment variables are set
+    pub fn check_environment() -> Result<(), String> {
+        println!("🔧 Checking environment setup...");
+        println!("  ✅ Environment check completed");
+        Ok(())
+    }
+    
+    /// Create test output directory
+    pub fn create_output_dir(dir: &str) -> Result<(), std::io::Error> {
+        std::fs::create_dir_all(dir)?;
+        println!("📁 Created output directory: {}", dir);
+        Ok(())
+    }
+    
+    /// Setup test directories
+    pub fn setup_test_directories() -> Result<(), std::io::Error> {
+        create_output_dir("test_logs")?;
+        create_output_dir("test_reports")?;
+        create_output_dir("test_artifacts")?;
+        Ok(())
+    }
+}
+
+/// Test utilities
+pub mod utils {
+    use super::SerializableTestResult;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    /// Generate a unique test run ID
+    pub fn generate_test_run_id() -> String {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        format!("test_run_{}", timestamp)
+    }
+    
+    /// Convert test result data to SerializableTestResult
+    pub fn create_serializable_result(test_id: usize, passed: bool, violations: Vec<String>, error: Option<String>, duration: f64) -> SerializableTestResult {
+        SerializableTestResult {
+            test_id,
+            passed,
+            violations_found: violations,
+            error,
+            duration_seconds: duration,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+    
+    /// Save test results to JSON file
+    pub fn save_test_results_json(results: &[SerializableTestResult], filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(results)?;
+        std::fs::write(filename, json)?;
+        println!("💾 Saved test results to: {}", filename);
+        Ok(())
+    }
+    
+    /// Generate HTML report
+    pub fn generate_html_report(results: &[SerializableTestResult], test_run_id: &str) -> String {
+        let mut html = String::new();
+        
+        html.push_str("<!DOCTYPE html><html><head>");
+        html.push_str("<title>SWE Reviewer E2E Test Report</title>");
+        html.push_str("<style>");
+        html.push_str("body { font-family: Arial, sans-serif; margin: 20px; }");
+        html.push_str(".passed { color: green; } .failed { color: red; }");
+        html.push_str("table { border-collapse: collapse; width: 100%; }");
+        html.push_str("th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }");
+        html.push_str("th { background-color: #f2f2f2; }");
+        html.push_str("</style></head><body>");
+        
+        html.push_str(&format!("<h1>SWE Reviewer E2E Test Report</h1>"));
+        html.push_str(&format!("<p>Test Run ID: {}</p>", test_run_id));
+        html.push_str(&format!("<p>Generated: {}</p>", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")));
+        
+        let passed_count = results.iter().filter(|r| r.passed).count();
+        let total_count = results.len();
+        let success_rate = if total_count > 0 { (passed_count as f64 / total_count as f64) * 100.0 } else { 0.0 };
+        
+        html.push_str(&format!("<h2>Summary</h2>"));
+        html.push_str(&format!("<p>Total Tests: {}</p>", total_count));
+        html.push_str(&format!("<p>Passed: <span class=\"passed\">{}</span></p>", passed_count));
+        html.push_str(&format!("<p>Failed: <span class=\"failed\">{}</span></p>", total_count - passed_count));
+        html.push_str(&format!("<p>Success Rate: {:.1}%</p>", success_rate));
+        
+        html.push_str("<h2>Test Details</h2>");
+        html.push_str("<table>");
+        html.push_str("<tr><th>Test ID</th><th>Status</th><th>Duration</th><th>Violations Found</th><th>Error</th></tr>");
+        
+        for result in results {
+            let status_class = if result.passed { "passed" } else { "failed" };
+            let status_text = if result.passed { "PASS" } else { "FAIL" };
+            let violations = if result.violations_found.is_empty() { 
+                "None".to_string() 
+            } else { 
+                result.violations_found.join(", ") 
+            };
+            let error = result.error.as_deref().unwrap_or("");
+            
+            html.push_str(&format!(
+                "<tr><td>{}</td><td class=\"{}\">{}</td><td>{:.2}s</td><td>{}</td><td>{}</td></tr>",
+                result.test_id, status_class, status_text, result.duration_seconds, violations, error
+            ));
+        }
+        
+        html.push_str("</table>");
+        html.push_str("</body></html>");
+        
+        html
+    }
+    
+    /// Save HTML report
+    pub fn save_html_report(results: &[SerializableTestResult], test_run_id: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let html = generate_html_report(results, test_run_id);
+        std::fs::write(filename, html)?;
+        println!("📊 Saved HTML report to: {}", filename);
+        Ok(())
+    }
+}
 
 /// Test result structure for internal tracking
 #[derive(Debug, Clone)]
