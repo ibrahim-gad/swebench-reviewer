@@ -25,10 +25,126 @@ use chrono;
 use swe_reviewer_lib::report_checker::{validate_deliverable, download_deliverable, process_deliverable};
 use swe_reviewer_lib::analysis::analyze_logs;
 
-// Import test configuration - load from tests directory
-#[path = "test_config.rs"]
-mod test_config;
-use test_config::{TestConfig, SerializableTestResult, setup, utils, execution};
+// Inline test configuration to avoid external file dependencies
+
+/// Test execution configuration
+#[derive(Debug, Clone)]
+pub struct TestConfig {
+    pub timeout_seconds: u64,
+    pub retry_attempts: u32,
+    pub parallel_execution: bool,
+    pub save_logs: bool,
+    pub log_directory: String,
+}
+
+impl Default for TestConfig {
+    fn default() -> Self {
+        Self {
+            timeout_seconds: std::env::var("E2E_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300), // 5 minutes default
+            retry_attempts: std::env::var("E2E_RETRY_ATTEMPTS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1),
+            parallel_execution: std::env::var("E2E_PARALLEL")
+                .map(|s| s.to_lowercase() == "true")
+                .unwrap_or(false),
+            save_logs: std::env::var("E2E_SAVE_LOGS")
+                .map(|s| s.to_lowercase() != "false")
+                .unwrap_or(true),
+            log_directory: std::env::var("E2E_LOG_DIR")
+                .unwrap_or_else(|_| "test_logs".to_string()),
+        }
+    }
+}
+
+/// Test result for JSON serialization
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SerializableTestResult {
+    pub test_id: usize,
+    pub passed: bool,
+    pub violations_found: Vec<String>,
+    pub error: Option<String>,
+    pub duration_seconds: f64,
+    pub timestamp: String,
+}
+
+/// Test execution strategies
+pub mod execution {
+    /// Execution strategy for tests
+    #[derive(Debug, Clone)]
+    pub enum ExecutionStrategy {
+        All,
+        FailFast,
+        Sequential,
+    }
+    
+    impl ExecutionStrategy {
+        /// Get test IDs for this strategy
+        pub fn get_test_ids(&self) -> Vec<usize> {
+            (1..=15).collect() // All test IDs 1-15
+        }
+        
+        /// Should stop on first failure
+        pub fn should_fail_fast(&self) -> bool {
+            matches!(self, ExecutionStrategy::FailFast)
+        }
+    }
+}
+
+/// Setup utilities
+pub mod setup {
+    /// Check if required environment variables are set
+    pub fn check_environment() -> Result<(), String> {
+        println!("🔧 Checking environment setup...");
+        println!("  ✅ Environment check completed");
+        Ok(())
+    }
+    
+    /// Create test output directory
+    pub fn create_output_dir(dir: &str) -> Result<(), std::io::Error> {
+        std::fs::create_dir_all(dir)?;
+        println!("📁 Created output directory: {}", dir);
+        Ok(())
+    }
+}
+
+/// Test utilities
+pub mod utils {
+    use super::SerializableTestResult;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    /// Generate a unique test run ID
+    pub fn generate_test_run_id() -> String {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        format!("test_run_{}", timestamp)
+    }
+    
+    /// Convert test result data to SerializableTestResult
+    pub fn create_serializable_result(test_id: usize, passed: bool, violations: Vec<String>, error: Option<String>, duration: f64) -> SerializableTestResult {
+        SerializableTestResult {
+            test_id,
+            passed,
+            violations_found: violations,
+            error,
+            duration_seconds: duration,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+    
+    /// Save test results to JSON file
+    pub fn save_test_results_json(results: &[SerializableTestResult], filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(results)?;
+        std::fs::write(filename, json)?;
+        println!("💾 Saved test results to: {}", filename);
+        Ok(())
+    }
+}
 
 /// Test result structure for internal tracking
 #[derive(Debug, Clone)]

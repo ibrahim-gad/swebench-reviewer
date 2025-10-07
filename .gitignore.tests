@@ -1,0 +1,9 @@
+# Test Configuration Files
+
+# Ignore local test configuration overrides
+src-tauri/tests/test_config.local.rs
+src-tauri/tests/.env.test
+
+# Ignore any sensitive test data
+src-tauri/test_data/credentials.json
+src-tauri/test_artifacts/*.secret
