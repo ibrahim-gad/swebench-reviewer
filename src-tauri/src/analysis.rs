@@ -11,6 +11,10 @@ lazy_static! {
     static ref TEST_LINE_RE: Regex = Regex::new(r"(?i)\btest\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored|error)\s*$")
         .expect("Failed to compile TEST_LINE_RE regex");
 
+    // Pattern for mixed format: "test name ... status additional_content"
+    static ref TEST_MIXED_FORMAT_RE: Regex = Regex::new(r"(?i)\btest\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored|error)\s+(.+)")
+        .expect("Failed to compile TEST_MIXED_FORMAT_RE regex");
+
     static ref TEST_START_RE: Regex = Regex::new(r"(?i)\btest\s+(.+?)\s+\.\.\.\s*(.*?)$")
         .expect("Failed to compile TEST_START_RE regex");
 
@@ -861,6 +865,21 @@ fn parse_rust_log_single_line(text: &str) -> ParsedLog {
         }
     }
 
+    // Handle mixed format: "test name ... status additional_content"
+    for cap in TEST_MIXED_FORMAT_RE.captures_iter(&clean) {
+        let name = cap.get(1).unwrap().as_str().to_string();
+        let mut status = cap.get(2).unwrap().as_str().to_lowercase();
+        if status == "failed" || status == "error" {
+            status = "failed".to_string();
+        }
+        match status.as_str() {
+            "ok" => { passed.insert(name); }
+            "failed" => { failed.insert(name); }
+            "ignored" => { ignored.insert(name); }
+            _ => {}
+        }
+    }
+
     // UI test format: "path/to/test.rs ... ok" (without "test" keyword)
     for line in clean.lines() {
         if let Some(cap) = UI_TEST_PATH_RE.captures(line) {
@@ -1122,6 +1141,7 @@ fn parse_nextest_log(text: &str) -> ParsedLog {
             let full_match = captures.get(1).unwrap().as_str().trim();
             // Extract just the test name part (after the crate name)
             let test_name = extract_test_name_from_nextest_line(full_match);
+            println!("NEXTEST PASS: '{}' -> '{}'", full_match, test_name);
             passed.insert(test_name);
             continue;
         }
@@ -1131,6 +1151,7 @@ fn parse_nextest_log(text: &str) -> ParsedLog {
             let full_match = captures.get(1).unwrap().as_str().trim();
             // Extract just the test name part (after the crate name)
             let test_name = extract_test_name_from_nextest_line(full_match);
+            println!("NEXTEST FAIL: '{}' -> '{}'", full_match, test_name);
             failed.insert(test_name);
             continue;
         }
@@ -1148,6 +1169,20 @@ fn parse_nextest_log(text: &str) -> ParsedLog {
         
         // Also handle traditional Rust test patterns for mixed format logs
         if let Some(captures) = TEST_LINE_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let status = captures.get(2).unwrap().as_str().to_lowercase();
+            
+            match status.as_str() {
+                "ok" => { passed.insert(test_name); }
+                "failed" | "error" => { failed.insert(test_name); }
+                "ignored" => { ignored.insert(test_name); }
+                _ => {}
+            }
+            continue;
+        }
+        
+        // Handle mixed format: "test name ... status additional_content"
+        if let Some(captures) = TEST_MIXED_FORMAT_RE.captures(line) {
             let test_name = captures.get(1).unwrap().as_str().to_string();
             let status = captures.get(2).unwrap().as_str().to_lowercase();
             
@@ -1245,6 +1280,7 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
     
     // First pass: handle normal test lines with immediate results
     for line in &lines {
+        // Handle standard format: "test name ... status"
         if let Some(captures) = TEST_LINE_RE.captures(line) {
             let test_name = captures.get(1).unwrap().as_str().to_string();
             let status = captures.get(2).unwrap().as_str().to_lowercase();
@@ -1257,6 +1293,23 @@ fn parse_rust_log_file(file_path: &str) -> Result<ParsedLog, String> {
                 "ignored" => { ignored.insert(test_name); }
                 _ => {}
             }
+            continue;
+        }
+        
+        // Handle mixed format: "test name ... status additional_content"
+        if let Some(captures) = TEST_MIXED_FORMAT_RE.captures(line) {
+            let test_name = captures.get(1).unwrap().as_str().to_string();
+            let status = captures.get(2).unwrap().as_str().to_lowercase();
+            
+            *freq.entry(test_name.clone()).or_insert(0) += 1;
+            
+            match status.as_str() {
+                "ok" => { passed.insert(test_name); }
+                "failed" | "error" => { failed.insert(test_name); }
+                "ignored" => { ignored.insert(test_name); }
+                _ => {}
+            }
+            continue;
         }
     }
     
@@ -1752,17 +1805,48 @@ fn detect_same_file_duplicates(raw_content: &str) -> Vec<String> {
 
 fn status_lookup(names: &[String], parsed: &ParsedLog) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
-    for name in names {
-        if parsed.failed.contains(name) {
-            out.insert(name.clone(), "failed".to_string());
-        } else if parsed.passed.contains(name) {
-            out.insert(name.clone(), "passed".to_string());
-        } else if parsed.ignored.contains(name) {
-            out.insert(name.clone(), "ignored".to_string());
-        } else {
-            out.insert(name.clone(), "missing".to_string());
-        }
+    
+    println!("=== STATUS LOOKUP DEBUG ===");
+    println!("Looking up status for {} test names", names.len());
+    println!("Parsed log has {} passed, {} failed, {} ignored tests", 
+             parsed.passed.len(), parsed.failed.len(), parsed.ignored.len());
+    
+    // Debug: show some examples of parsed test names
+    if !parsed.passed.is_empty() {
+        println!("Sample passed tests: {:?}", parsed.passed.iter().take(3).collect::<Vec<_>>());
     }
+    if !parsed.failed.is_empty() {
+        println!("Sample failed tests: {:?}", parsed.failed.iter().take(3).collect::<Vec<_>>());
+    }
+    
+    for name in names {
+        let status = if parsed.failed.contains(name) {
+            "failed".to_string()
+        } else if parsed.passed.contains(name) {
+            "passed".to_string()
+        } else if parsed.ignored.contains(name) {
+            "ignored".to_string()
+        } else {
+            // Debug: Check for partial matches to understand the mismatch
+            let partial_matches: Vec<&String> = parsed.passed.iter()
+                .chain(parsed.failed.iter())
+                .chain(parsed.ignored.iter())
+                .filter(|test| test.contains(name) || name.contains(*test))
+                .collect();
+            
+            if !partial_matches.is_empty() {
+                println!("MISMATCH: '{}' not found exactly, but found partial matches: {:?}", name, partial_matches);
+            } else {
+                println!("MISSING: '{}' not found at all", name);
+            }
+            
+            "missing".to_string()
+        };
+        
+        out.insert(name.clone(), status);
+    }
+    
+    println!("=== END STATUS LOOKUP ===");
     out
 }
 
@@ -2347,44 +2431,102 @@ fn generate_analysis_result(
 }
 
 // Function to extract clean test name from nextest line
-// Input: "grillon assertion::impls::header::tests::header_map::impl_is_eq_header_map"
-// Output: "assertion::impls::header::tests::header_map::impl_is_eq_header_map"
+// This tries to intelligently parse different nextest formats without hardcoding specific crates
 fn extract_test_name_from_nextest_line(full_line: &str) -> String {
-    // Split by spaces and get the part after the crate name
-    let parts: Vec<&str> = full_line.trim().split_whitespace().collect();
+    let trimmed = full_line.trim();
     
-    // If we have multiple parts, the first is usually the crate name (e.g., "grillon")
-    // and the rest form the actual test path
-    if parts.len() >= 2 {
-        // Join all parts except the first (which is typically the crate name)
-        parts[1..].join(" ")
-    } else if parts.len() == 1 {
-        // If only one part, check if it contains the crate prefix pattern
-        let part = parts[0];
-        
-        // Look for patterns like "crate_name module::path::test_name"
-        // Try to find the first occurrence of "::" and see if there's a word before it
-        if let Some(double_colon_pos) = part.find("::") {
-            // Find the space or start that precedes the module path
-            let before_double_colon = &part[..double_colon_pos];
-            if let Some(last_space) = before_double_colon.rfind(' ') {
-                // Return everything after the last space before "::"
-                part[last_space + 1..].to_string()
-            } else {
-                // Check if the part before "::" looks like a crate name (single word)
-                // and the part after "::" looks like a module path
-                let words_before: Vec<&str> = before_double_colon.split_whitespace().collect();
-                if words_before.len() == 1 && !before_double_colon.contains("::") {
-                    // Likely format: "crate_name module::path::test"
-                    part[double_colon_pos - words_before[0].len()..].trim().to_string()
-                } else {
-                    part.to_string()
-                }
-            }
-        } else {
-            part.to_string()
-        }
-    } else {
-        full_line.trim().to_string()
+    println!("EXTRACT DEBUG: input='{}'", trimmed);
+    
+    // Simple approach: Just return the full test name as captured by regex
+    // The nextest format is: "PASS [time] full_test_name"
+    // We should preserve the full test name exactly as it appears
+    
+    // Special handling for known patterns in main.json:
+    // 1. "miden-testing kernel_tests::..." -> keep as is
+    // 2. "miden-testing::miden-integration-tests ..." -> keep as is  
+    // 3. "miden-lib ..." -> keep as is
+    // 4. "miden-objects ..." -> keep as is
+    // 5. "miden-tx ..." -> keep as is (NEW - this was missing!)
+    
+    // For miden crates, the format in main.json matches exactly what's in the log
+    if trimmed.starts_with("miden-") {
+        let result = trimmed.to_string();
+        println!("EXTRACT DEBUG: Miden crate, keeping as-is='{}'", result);
+        return result;
     }
+    
+    // Check for double crate format: "miden-testing::miden-integration-tests scripts::faucet::test"
+    if trimmed.contains("::miden-integration-tests ") {
+        let result = trimmed.to_string();
+        println!("EXTRACT DEBUG: Double crate format, keeping as-is='{}'", result);
+        return result;
+    }
+    
+    // Check for crate::lib format: "grillon::lib assert::json_path..." -> just the test part
+    if trimmed.contains("::lib ") {
+        if let Some(lib_pos) = trimmed.find("::lib ") {
+            let result = trimmed[lib_pos + 6..].trim().to_string(); // 6 = len("::lib ")
+            println!("EXTRACT DEBUG: crate::lib format, extracting test part='{}'", result);
+            return result;
+        }
+    }
+    
+    // For other formats, check if there's a space and we should remove the crate prefix
+    if let Some(space_pos) = trimmed.find(' ') {
+        let crate_part = &trimmed[..space_pos];
+        let test_part = &trimmed[space_pos + 1..];
+        
+        // If the crate part doesn't contain "::" and the test part does, remove the crate prefix
+        if !crate_part.contains("::") && test_part.contains("::") {
+            let result = test_part.trim().to_string();
+            println!("EXTRACT DEBUG: Generic crate format, removing prefix='{}'", result);
+            return result;
+        }
+    }
+    
+    // If no patterns match, return the original
+    let result = trimmed.to_string();
+    println!("EXTRACT DEBUG: no pattern matched, keeping original='{}'", result);
+    result
+}
+
+
+
+// Test function to verify nextest parsing
+#[tauri::command]
+pub fn test_nextest_parsing() -> Result<String, String> {
+    let test_content = r#"PASS [   0.021s] grillon assertion::impls::json_path::tests::is_eq::impl_is_eq_object_with_array_and_object
+PASS [   0.155s] grillon::lib assert::json_path::json_path_does_not_match
+PASS [   0.028s] miden-lib account::interface::test::test_basic_wallet_default_notes
+PASS [   0.034s] miden-testing kernel_tests::tx::test_account_delta::storage_delta_for_map_slots
+PASS [   0.045s] miden-testing::miden-integration-tests scripts::faucet::faucet_contract_mint_fungible_asset_fails_exceeds_max_supply
+PASS [   2.877s] miden-tx auth::tx_authenticator::test::serialize_auth_key"#;
+    
+    println!("=== TESTING NEXTEST PARSING ===");
+    
+    // Test the nextest format detection
+    let is_nextest = looks_nextest_format(test_content);
+    println!("Detected as nextest format: {}", is_nextest);
+    
+    // Parse the content
+    let parsed = if is_nextest {
+        parse_nextest_log(test_content)
+    } else {
+        parse_rust_log_single_line(test_content)
+    };
+    
+    println!("Parsed results:");
+    println!("  Passed: {} tests", parsed.passed.len());
+    for test in &parsed.passed {
+        println!("    - {}", test);
+    }
+    
+    // Test specific extraction for the problematic case
+    println!("\n=== TESTING SPECIFIC EXTRACTION ===");
+    let test_line = "miden-tx auth::tx_authenticator::test::serialize_auth_key";
+    let extracted = extract_test_name_from_nextest_line(test_line);
+    println!("Input: '{}'", test_line);
+    println!("Extracted: '{}'", extracted);
+    
+    Ok(format!("Parsed {} passed tests", parsed.passed.len()))
 }

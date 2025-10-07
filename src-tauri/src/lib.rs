@@ -2,8 +2,8 @@
 mod auth;
 mod drive;
 mod settings;
-mod report_checker;
-mod analysis;
+pub mod report_checker;
+pub mod analysis;
 
 #[cfg(test)]
 mod analysis_test;
