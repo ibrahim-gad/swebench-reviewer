@@ -26,7 +26,7 @@ use swe_reviewer_lib::report_checker::{validate_deliverable, download_deliverabl
 use swe_reviewer_lib::analysis::analyze_logs;
 
 // Import test configuration - load from tests directory
-#[path = "../tests/test_config.rs"]
+#[path = "test_config.rs"]
 mod test_config;
 use test_config::{TestConfig, SerializableTestResult, setup, utils, execution};
 
