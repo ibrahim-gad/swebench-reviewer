@@ -31,4 +31,7 @@ test-*.js
 *.py
 
 # Test configuration overrides (sensitive data)
-src-tauri/tests/*
+src-tauri/tests/test_config.local.rs
+src-tauri/tests/.env.test
+src-tauri/test_artifacts/*.secret
+src-tauri/test_data/credentials.json
