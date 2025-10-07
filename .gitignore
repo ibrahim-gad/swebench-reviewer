@@ -23,14 +23,10 @@ dist-ssr
 *.sw?
 .env
 
-*_test/
-test_*/
-*_test.rs
-test-*.js
-*.py
-
-# Test configuration overrides (sensitive data)
-src-tauri/tests/test_config.local.rs
-src-tauri/tests/.env.test
+# Test artifacts and sensitive data (not the test code itself)
 src-tauri/test_artifacts/*.secret
 src-tauri/test_data/credentials.json
+src-tauri/tests/.env.test
+test_logs/
+test_reports/
+test_artifacts/
