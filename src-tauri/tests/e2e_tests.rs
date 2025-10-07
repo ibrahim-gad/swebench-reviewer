@@ -25,7 +25,8 @@ use chrono;
 use swe_reviewer_lib::report_checker::{validate_deliverable, download_deliverable, process_deliverable};
 use swe_reviewer_lib::analysis::analyze_logs;
 
-// Import test configuration
+// Import test configuration - load from the same directory
+#[path = "test_config.rs"]
 mod test_config;
 use test_config::{TestConfig, SerializableTestResult, setup, utils, execution};
 
